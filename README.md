@@ -28,7 +28,7 @@ Claude Profiles fixes all of these in one app.
 - **Create profiles in the app.** Give a profile a name, the email of its Claude subscription, an icon, and the working folders on your Mac its Claude Code sessions use. A setup checklist on each profile tells you what is done and what is left.
 - **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark on that colour. Or use any image you like.
 - **Remote Control servers, managed for you.** Each profile's folders get a `claude remote-control` server that runs as a launchd job, so it keeps running when the app is closed and comes back after a restart. Start, stop and restart from the **Servers** screen.
-- **See and clear sessions.** Every open session is listed with its idle time and memory, with **End** to free it and **Keep** to protect it.
+- **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
 - **Links behave.** Links to anything outside Claude open in your default browser. Claude links stay in the profile. Right-click any link for **Open Link in Browser** or **Copy Link**.
 - **Guard rails.** Warns when a profile's Claude Code login is a different account from the profile's, refuses to start a server in a folder Claude Code hasn't trusted, and can pin folders to accounts (for example, a client's folders may only run under that client's account).
@@ -106,7 +106,7 @@ Windows and their active profiles are restored when you reopen the app.
 The **Servers** screen lists every profile's folders and their Remote Control servers.
 
 - **Start / Stop / Restart** a server. Servers are launchd jobs, so they keep running when Claude Profiles is closed and start again after you log in. Stopping takes that server's sessions offline.
-- **Sessions** are listed with how long they have been idle and how much memory they hold (including their MCP servers). **End** stops a session and frees its memory. **Keep** protects a session from automatic cleanup.
+- **Sessions** are listed by title, with their last activity and how much memory they hold (including their MCP servers). Titles and last activity come from claude.ai using that profile's sign-in; this uses claude.ai's internal web API, so if it ever changes the screen falls back to session IDs. **End** stops a session and frees its memory. **Keep** protects a session from automatic cleanup.
 - **Also running from a Terminal window**: if you already run `claude remote-control` by hand in a profile's folder, it shows here. When its sessions are done, press **Stop it**, then **Start** to hand the folder over to the app.
 - **Other servers** lists Remote Control servers that match no profile, so you can stop strays.
 - **Automatic cleanup** is off until you switch it on. Once an hour it ends sessions that have been idle for `idleHours` (default 3), where idle means the session and everything it started used less than `idleCpuPerHour` CPU seconds per hour (default 30; an idle session uses about 10 to 20). A tool that finished since the last check counts as activity. **Preview** shows what it would end; **Run now** ends them immediately. Claude desktop app sessions are left alone unless you set `includeDesktop`.
@@ -184,7 +184,8 @@ Servers started from a source run point at the development copy of Electron, so 
 | `CLAUDE_PROFILES_DIR` | Use another data folder for `profiles.json`, icons, state and logs. |
 | `CLAUDE_PROFILES_USER_DATA` | Use another folder for sign-ins and window state. |
 | `CLAUDE_PROFILES_LABEL_PREFIX` | Use another launchd label prefix, so test servers never touch real ones. |
-| `CLAUDE_PROFILES_DEBUG=1` | Log the sidebar's console. With `CLAUDE_PROFILES_DEBUG_CLICK=<id>`, `CLAUDE_PROFILES_DEBUG_EVAL=<js>` and `CLAUDE_PROFILES_DEBUG_SHOT=<path>`, click a sidebar item, run a script in the active view, and save screenshots. |
+| `CLAUDE_PROFILES_DEBUG=1` | Log the sidebar's console. With `CLAUDE_PROFILES_DEBUG_CLICK=<id>`, `CLAUDE_PROFILES_DEBUG_EVAL=<js>`, `CLAUDE_PROFILES_DEBUG_SHOT=<path>` and `CLAUDE_PROFILES_DEBUG_CLOSE_FIRST=1`, click a sidebar item, run a script in the active view, save screenshots, and close the first window. |
+| `CLAUDE_PROFILES_DEBUG_NET=1` | Log claude.ai API requests made by profile pages. |
 
 ## License
 

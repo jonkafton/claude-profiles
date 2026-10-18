@@ -36,6 +36,7 @@
   th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--line); }
   td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
   td.mono { font-family: ui-monospace, Menlo, monospace; }
+  td.title { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tr:last-child td { border-bottom: 0; }
   pre { font: 11px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; margin: 8px 0 0; max-height: 220px; overflow: auto; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 12px; max-width: 80%; display: none; }
@@ -73,18 +74,20 @@
     refresh();
   }
   const short = (id) => (id ? id.replace(/^cse_/, '').slice(0, 10) + '…' : '—');
-  const idle = (hrs) => (hrs == null ? '—' : hrs < 1 ? `${Math.round(hrs * 60)} min` : `${hrs} h`);
+  const fmtHours = (hrs) => (hrs < 1 ? `${Math.max(1, Math.round(hrs * 60))} min` : hrs < 48 ? `${Math.round(hrs * 10) / 10} h` : `${Math.round(hrs / 24)} d`);
+  // Prefer the last activity claude.ai reports; fall back to the cleanup pass's own idle estimate.
+  const idle = (s) => (s.lastEventAt ? fmtHours((Date.now() - Date.parse(s.lastEventAt)) / 3600000) : s.idleHours == null ? '—' : fmtHours(s.idleHours));
 
   function sessionsTable(sessions) {
     if (!sessions.length) return h('div', { class: 'note sub' }, 'No open sessions.');
     return h('table', {},
-      h('tr', {}, h('th', {}, 'Session'), h('th', {}, 'Idle'), h('th', {}, 'Memory'), h('th', {}, 'Keep'), h('th', {}, '')),
+      h('tr', {}, h('th', {}, 'Session'), h('th', {}, 'Last activity'), h('th', {}, 'Memory'), h('th', {}, 'Keep'), h('th', {}, '')),
       sessions.map((s) => h('tr', {},
-        h('td', { class: 'mono', title: s.sessionId || '' }, short(s.sessionId)),
-        h('td', {}, idle(s.idleHours)),
+        h('td', { class: s.title ? 'title' : 'mono', title: s.sessionId || '' }, s.title || short(s.sessionId)),
+        h('td', {}, idle(s)),
         h('td', {}, `${s.rssMB} MB`),
         h('td', {}, h('input', { type: 'checkbox', checked: s.kept, title: 'Never end this session automatically', onchange: (e) => act(() => window.mgr.keep(s.sessionId || s.pid, e.target.checked)) })),
-        h('td', {}, h('button', { class: 'danger', onclick: () => confirm(`End session ${short(s.sessionId)}? Its process stops and its memory is freed.`) && act(() => window.mgr.endSession(s.pid), 'Session ended') }, 'End')))));
+        h('td', {}, h('button', { class: 'danger', onclick: () => confirm(`End session “${s.title || short(s.sessionId)}”? Its process stops and its memory is freed.`) && act(() => window.mgr.endSession(s.pid), 'Session ended') }, 'End')))));
   }
 
   function serverBlock(s) {

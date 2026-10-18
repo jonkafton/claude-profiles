@@ -133,6 +133,7 @@ function guardContents(contents) {
 function profileSession(p) {
   const ses = session.fromPartition(`persist:profile-${p.id}`);
   if (!sessionsReady.has(p.id)) {
+    if (process.env.CLAUDE_PROFILES_DEBUG_NET) ses.webRequest.onCompleted({ urls: ['https://claude.ai/*', 'https://api.anthropic.com/*'] }, (d) => { if (/session|code/i.test(d.url) && !/\.(js|css|woff2?|png|svg)(\?|$)/.test(d.url)) console.log('[net]', d.method, d.statusCode, d.url.slice(0, 160)); });
     ses.setUserAgent(CHROME_UA);
     ses.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)));
     ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
@@ -243,14 +244,25 @@ function createWindow({ activeId, bounds } = {}) {
   win.on('resize', () => layout(w));
   win.on('focus', () => syncDockIcon(w));
   win.on('moved', saveWindows);
-  win.on('closed', () => {
-    // Forget the window first: if anything below throws, a destroyed window must not stay in the list.
+  // All teardown happens in 'close'. A BaseWindow holding WebContentsViews is destroyed without ever
+  // emitting 'closed' (seen on Electron 43), so cleanup placed there never ran: the dead window stayed
+  // in `windows` with live pages, later layout saves threw "Object has been destroyed", status pushes to
+  // its views crashed the app (EXC_BAD_ACCESS), and the saved layout reopened the closed window.
+  let tornDown = false;
+  const teardown = () => {
+    if (tornDown) return;
+    tornDown = true;
     windows.delete(win.id);
-    // A BaseWindow does not tear down its views' pages; close them or they keep running.
-    for (const v of [sidebar, ...w.views.values()]) { try { if (!v.webContents.isDestroyed()) v.webContents.close(); } catch { /* already gone */ } }
+    // A BaseWindow does not close its views' pages; detach each view while the window exists, then close it.
+    for (const v of [sidebar, ...w.views.values()]) {
+      try { win.contentView.removeChildView(v); } catch { /* not attached */ }
+      try { if (!v.webContents.isDestroyed()) v.webContents.close(); } catch { /* already gone */ }
+    }
     // Closing the last window keeps the saved layout, so the next launch brings it back.
     if (!app.isQuitting && windows.size) saveWindows();
-  });
+  };
+  win.on('close', teardown);
+  win.on('closed', teardown);
   sidebar.webContents.once('did-finish-load', () => {
     const first = isPanel(activeId) || profile(activeId) ? activeId : defaultScreen();
     if (!config.profiles.length) startNewProfile(w); else select(w, first);
@@ -263,6 +275,8 @@ function createWindow({ activeId, bounds } = {}) {
     if (click) sidebar.webContents.once('did-finish-load', () => setTimeout(() => sidebar.webContents.executeJavaScript(`document.querySelector('[data-id="${click}"]')?.click()`), 3000));
     // Screenshots without screen-recording permission: the sidebar and the active view, as PNGs.
     const shot = process.env.CLAUDE_PROFILES_DEBUG_SHOT;
+    // Close this window after a delay, to test window teardown.
+    if (process.env.CLAUDE_PROFILES_DEBUG_CLOSE_FIRST && windows.size === 1) setTimeout(() => { console.log('[debug] closing first window'); win.close(); setTimeout(() => console.log('[debug] after close: destroyed', win.isDestroyed(), 'visible', !win.isDestroyed() && win.isVisible()), 2000); }, 6000);
     // Run a script in the active view, to drive a screen in tests.
     const evalCode = process.env.CLAUDE_PROFILES_DEBUG_EVAL;
     if (evalCode) setTimeout(() => w.views.get(w.activeId)?.webContents.executeJavaScript(evalCode).then((r) => console.log('[eval] result', r), (e) => console.log('[eval] error', e.message)), 4000);
@@ -394,6 +408,32 @@ async function pushStatus(known) {
   } catch { /* status is best effort */ }
 }
 
+// Session titles, as shown in claude.ai's own sidebar, fetched with each profile's sign-in. This is
+// claude.ai's internal web API, not a documented one: on any failure the Servers screen falls back to IDs.
+const titleCache = new Map(); // profileId -> { at, map: Map<sessionId, { title, lastEventAt }> }
+async function sessionTitles(profileId) {
+  const cached = titleCache.get(profileId);
+  if (cached && Date.now() - cached.at < 60000) return cached.map;
+  const map = new Map();
+  try {
+    const r = await session.fromPartition(`persist:profile-${profileId}`).fetch('https://claude.ai/v1/code/sessions?statuses=active&statuses=paused&limit=50', {
+      credentials: 'include',
+      headers: { 'anthropic-version': '2023-06-01', 'anthropic-client-platform': 'web_claude_ai' },
+    });
+    if (r.ok) for (const s of (await r.json()).data || []) map.set(s.id, { title: s.title || null, lastEventAt: s.last_event_at || null });
+  } catch { /* signed out or offline: no titles */ }
+  titleCache.set(profileId, { at: Date.now(), map });
+  return map;
+}
+async function withTitles(st) {
+  const maps = Object.fromEntries(await Promise.all(config.profiles.map(async (p) => [p.id, await sessionTitles(p.id)])));
+  const find = (sid, prefer) => (prefer && maps[prefer]?.get(sid)) || Object.values(maps).map((m) => m.get(sid)).find(Boolean);
+  const enrich = (list, prefer) => { for (const s of list) { const t = find(s.sessionId, prefer); if (t) Object.assign(s, t); } };
+  for (const s of st.servers) { enrich(s.sessions, s.profileId); for (const t of s.terminal) enrich(t.sessions, s.profileId); }
+  for (const u of st.unmanaged) enrich(u.sessions);
+  return st;
+}
+
 // Only the app's own screens may call these; profile pages have no preload and cannot reach IPC at all.
 function fromPanel(event, id) {
   return [...windows.values()].find((w) => w.views.get(id)?.webContents === event.sender) || null;
@@ -402,7 +442,7 @@ function fromPanel(event, id) {
 ipcMain.handle('mgr', async (event, action, ...args) => {
   if (!fromPanel(event, SERVERS)) throw new Error('not allowed');
   const actions = {
-    status: async () => { const st = await mgr.status(); pushStatus(st); return st; },
+    status: async () => { const st = await mgr.status(); pushStatus(st); return withTitles(st); },
     start: (key) => mgr.startServer(key),
     stop: (key) => mgr.stopServer(key),
     restart: async (key) => { await mgr.stopServer(key); await mgr.startServer(key); },
