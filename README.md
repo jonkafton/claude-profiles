@@ -7,6 +7,8 @@ An unofficial macOS app for running several Claude accounts side by side, each i
 > [!IMPORTANT]
 > **Sign in by email, not Google or Apple.** Google and Apple block sign-in from inside apps like this one ("Couldn't sign you in. This browser or app may not be secure"). On the Claude sign-in page choose **Continue with email**, then **open the link in the email**: it opens in your normal browser and shows a **verification code**. Type that code into Claude Profiles. Details in [Signing in](#signing-in-by-email).
 
+![Claude Profiles: a sidebar of Claude Code and Claude Design profiles, each with its own icon, server status dot and session count, beside a Claude Code session](docs/screenshot.png)
+
 ## Why this exists
 
 If you use more than one Claude account on one Mac (a work seat and a personal plan, two subscriptions to cover your usage, a client's organisation), the existing options all break down somewhere:
