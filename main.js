@@ -198,14 +198,36 @@ function updateTitle(w) {
   w.win.setTitle(`${p.name} · ${page}`);
 }
 
+// macOS draws app icons on a grid: the visible tile is 824 of 1024 px (about 80%), centred in transparent
+// margins. A profile icon that fills its whole image (the generated colour tiles, most pictures) would look
+// oversized next to other apps in the Dock and ⌘Tab, so give it those margins. Icons that already have
+// transparent margins (such as ones taken from other Mac apps) are used as they are.
+function dockImage(img) {
+  const probe = img.resize({ width: 64, height: 64 }).toBitmap();
+  const alpha = (x, y) => probe[(y * 64 + x) * 4 + 3];
+  if (alpha(32, 1) < 16 && alpha(1, 32) < 16 && alpha(32, 62) < 16) return img;
+  const size = 512;
+  const inner = Math.round((size * 824) / 1024);
+  const offset = Math.round((size - inner) / 2);
+  const src = img.resize({ width: inner, height: inner, quality: 'best' }).toBitmap();
+  const out = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < inner; y++) src.copy(out, ((y + offset) * size + offset) * 4, y * inner * 4, (y + 1) * inner * 4);
+  return nativeImage.createFromBitmap(out, { width: size, height: size });
+}
+const dockImages = new Map(); // iconPath -> padded image, so switching profiles does no image work twice
+
 // The app icon (Dock and ⌘Tab) takes on the active profile's icon, so the switcher shows which account
 // you are about to land in.
 function syncDockIcon(w) {
   if (!w || w.win.isDestroyed()) return;
   const p = profile(w?.activeId);
   if (config.dockIconFollowsProfile === false || !p?.iconPath || process.platform !== 'darwin') return;
-  const img = nativeImage.createFromPath(p.iconPath);
-  if (!img.isEmpty()) app.dock.setIcon(img);
+  if (!dockImages.has(p.iconPath)) {
+    const img = nativeImage.createFromPath(p.iconPath);
+    dockImages.set(p.iconPath, img.isEmpty() ? null : dockImage(img));
+  }
+  const img = dockImages.get(p.iconPath);
+  if (img) app.dock.setIcon(img);
 }
 
 function select(w, id) {

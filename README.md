@@ -23,7 +23,7 @@ Claude Profiles fixes all of these in one app.
 ## Features
 
 - **Multiple windows, one per desktop.** Open as many windows as you like (⌘N), each showing its own profile, and put one on each macOS desktop so a three-finger swipe moves between accounts. Two windows on the same account share its sign-in.
-- **The app icon becomes the active profile's icon.** In the Dock and the ⌘Tab switcher you see exactly which account you are switching to.
+- **The app icon becomes the active profile's icon.** In the Dock and the ⌘Tab switcher you see exactly which account you are switching to. Icons are fitted to the standard macOS icon grid, so they sit at the same size as your other apps.
 - **Isolated sign-in per profile.** Each profile has its own cookies, storage and cache, so each stays signed in to its own account with no crossover.
 - **A sidebar of your accounts**, with your own icons. Click one or press ⌘1 to ⌘9.
 - **Create profiles in the app.** Give a profile a name, the email of its Claude subscription, an icon, and the working folders on your Mac its Claude Code sessions use. A setup checklist on each profile tells you what is done and what is left.
