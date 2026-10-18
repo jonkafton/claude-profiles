@@ -31,6 +31,8 @@ const app = path.join(built, 'Claude Profiles.app');
 execFileSync('codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });
 execFileSync('codesign', ['--verify', '--deep', app], { stdio: 'inherit' });
 
+// ~/Applications does not exist on every Mac until something creates it.
+fs.mkdirSync(path.dirname(target), { recursive: true });
 if (fs.existsSync(target)) {
   // Swap the Contents inside the existing bundle rather than replacing the bundle: a Dock pin tracks the
   // bundle folder itself and would otherwise follow the old copy into dist/.
