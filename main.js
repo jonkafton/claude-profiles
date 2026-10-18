@@ -8,7 +8,7 @@
 // the servers are launchd jobs running this app's own helper, so they keep going when the app quits.
 // Links to anything outside Claude open in the default browser; Claude links stay in the profile.
 
-const { app, BaseWindow, WebContentsView, ipcMain, shell, session, Menu, nativeImage, clipboard, dialog } = require('electron');
+const { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, shell, session, Menu, nativeImage, clipboard, dialog } = require('electron');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -530,6 +530,85 @@ ipcMain.handle('mgr', async (event, action, ...args) => {
   return result;
 });
 
+const retiredFile = () => path.join(CONFIG_DIR, 'state', 'retired-environments.json');
+const readJsonFile = (f, fallback) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; } };
+function writeJsonFile(f, value) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(value, null, 2)); }
+
+// Stars and new-session defaults on claude.ai name an environment, not a folder. The picker opens new
+// sessions on the first starred environment, and falls back to the cloud when that one is gone. So when a
+// dead environment is archived, its star and defaults move to the folder's live one, in the same place.
+// claude.ai saves these as JSON strings in its Claude Code settings; a PUT carries only changed entries.
+// New sessions open where the composer was last pointed, which claude.ai keeps in the browser's
+// localStorage (ccd-session-store). Pointed at a dead environment, the folder reads "offline"; once that
+// environment is archived, the page falls back to the cloud and remembers that instead.
+const COMPOSER = 'ccd-session-store';
+async function pointComposerAtLive(p, replaced) {
+  // A claude.ai page that does not start the web app, so no running copy of the store writes over this.
+  const w = new BrowserWindow({ show: false, webPreferences: { session: profileSession(p), sandbox: true, contextIsolation: true } });
+  let moved = null;
+  try {
+    for (let i = 0; i < 3; i++) {
+      await w.loadURL('https://claude.ai/robots.txt').catch(() => {});
+      if (w.webContents.getURL().startsWith('https://claude.ai/')) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!w.webContents.getURL().startsWith('https://claude.ai/')) throw new Error('could not open a claude.ai page');
+    moved = await w.webContents.executeJavaScript(`(() => {
+      const raw = localStorage.getItem(${JSON.stringify(COMPOSER)});
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      const live = (${JSON.stringify(replaced)})[v.state?.worker?.id];
+      if (!live) return null;
+      v.state.worker = { type: 'environment', id: live };
+      v.state.currentHostKey = 'bridge';
+      localStorage.setItem(${JSON.stringify(COMPOSER)}, JSON.stringify(v));
+      return live;
+    })()`);
+  } catch (e) {
+    mgr.log(`could not repoint new sessions in ${p.name}: ${e.message}`);
+  } finally {
+    if (!w.isDestroyed()) w.destroy();
+  }
+  if (!moved) return;
+  mgr.log(`new sessions in ${p.name} now open on ${moved}`);
+  // A new-session screen already open still holds the old choice: reload it so it reads the new one.
+  for (const win of windows.values()) {
+    const view = win.views.get(p.id);
+    if (view && !view.webContents.isDestroyed() && /^https:\/\/claude\.ai\/code\/?(\?.*)?$/.test(view.webContents.getURL())) view.webContents.reload();
+  }
+}
+
+const STARRED = 'ccd/epitaxy-starred-environments';
+const PRESETS = 'ccd/session-presets';
+async function carrySettings(ses, org, replaced, profileName) {
+  const url = `https://claude.ai/api/claude_code/organizations/${org}/user_settings`;
+  const r = await ses.fetch(url, { credentials: 'include' });
+  if (!r.ok) return;
+  const entries = (await r.json()).content?.entries || {};
+  const changed = {};
+  const parse = (k) => { try { return entries[k] ? JSON.parse(entries[k]) : null; } catch { return null; } };
+  const starred = parse(STARRED);
+  if (Array.isArray(starred?.state?.starredIds)) {
+    const ids = starred.state.starredIds;
+    const next = [...new Set(ids.map((id) => { const m = id.match(/^bridge:(.+)$/); return m && replaced[m[1]] ? `bridge:${replaced[m[1]]}` : id; }))];
+    if (JSON.stringify(next) !== JSON.stringify(ids)) changed[STARRED] = JSON.stringify({ ...starred, state: { ...starred.state, starredIds: next }, updatedAt: Date.now() });
+  }
+  const presets = parse(PRESETS);
+  const places = presets?.state?.placeDefaults;
+  if (places && typeof places === 'object') {
+    const next = { ...places };
+    for (const [dead, live] of Object.entries(replaced)) {
+      if (!next[`bridge:${dead}`]) continue;
+      next[`bridge:${live}`] ??= next[`bridge:${dead}`];
+      delete next[`bridge:${dead}`];
+    }
+    if (JSON.stringify(next) !== JSON.stringify(places)) changed[PRESETS] = JSON.stringify({ ...presets, state: { ...presets.state, placeDefaults: next }, updatedAt: Date.now() });
+  }
+  if (!Object.keys(changed).length) return;
+  const w = await ses.fetch(url, { method: 'PUT', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entries: changed }) });
+  mgr.log(`${w.ok ? 'moved' : `could not move (${w.status})`} starred environments and defaults to the live environment in ${profileName}`);
+}
+
 // claude.ai's new-session picker shows one entry per folder and can pick an environment no server serves
 // any more, so the folder looks offline while its server is running. Each server start used to leave one
 // behind. Once a folder's server is online, archive this Mac's other environments for that folder.
@@ -550,14 +629,30 @@ async function retireStaleEnvironments() {
         const r = await ses.fetch(`${base}?limit=1000`, { credentials: 'include', headers });
         if (!r.ok) continue;
         const ours = ((await r.json()).environments || []).filter((e) => e.kind === 'bridge' && e.state === 'active' && e.bridge_info?.machine_name === machine);
+        const retired = readJsonFile(retiredFile(), {});
+        const replaced = {}; // dead environment ID -> the live one for its folder
+        const live = {};
         for (const folder of folders) {
           const here = ours.filter((e) => e.bridge_info.directory === folder);
-          if (!here.some((e) => e.bridge_info.online)) continue;
+          live[folder] = here.find((e) => e.bridge_info.online);
+          if (!live[folder]) continue;
+          for (const e of here.filter((x) => !x.bridge_info.online)) replaced[e.environment_id] = live[folder].environment_id;
+          for (const [id, r] of Object.entries(retired)) if (r.profileId === p.id && r.folder === folder) replaced[id] = live[folder].environment_id;
+        }
+        // First, while claude.ai still lists the dead environment: once it is gone, the page falls back
+        // to the cloud and saves that as the place new sessions open.
+        if (Object.keys(replaced).length) await pointComposerAtLive(p, replaced);
+        for (const folder of folders) {
+          if (!live[folder]) continue;
+          const here = ours.filter((e) => e.bridge_info.directory === folder);
           for (const e of here.filter((x) => !x.bridge_info.online)) {
             const a = await ses.fetch(`${base}/${e.environment_id}/archive`, { method: 'POST', credentials: 'include', headers });
             mgr.log(`${a.ok ? 'archived' : `could not archive (${a.status})`} stale environment ${e.environment_id} for ${folder} in ${p.name}`);
+            if (a.ok) retired[e.environment_id] = { profileId: p.id, folder, at: new Date().toISOString() };
           }
         }
+        writeJsonFile(retiredFile(), retired);
+        if (Object.keys(replaced).length) await carrySettings(ses, org.uuid, replaced, p.name);
       }
     } catch (e) { mgr.log(`retiring stale environments in ${p.name}: ${e.message}`); }
   }
