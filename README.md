@@ -189,3 +189,7 @@ Servers started from a source run point at the development copy of Electron, so 
 ## License
 
 [MIT](LICENSE)
+
+---
+
+Built by the team behind [1Presence](https://1presence.com/?utm_source=github&utm_medium=readme&utm_campaign=claude-profiles).
