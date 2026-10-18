@@ -549,8 +549,14 @@ ipcMain.handle('editor', async (event, action, ...args) => {
       if (img.isEmpty()) throw new Error('That file could not be read as an image.');
       return { source: file, preview: img.resize({ width: 96 }).toDataURL() };
     },
-    save: (input) => {
+    save: async (input) => {
+      // Servers for folders the profile no longer has (removed, or the profile became Design) are stopped,
+      // so no launchd job keeps running, or retrying, for a folder that has left profiles.json.
+      const serverKeys = (id) => (P.readRaw(CONFIG_DIR).profiles.find((p) => p.id === id)?.servers || []).map((sv) => `${id}-${sv.id}`);
+      const before = input.id ? serverKeys(input.id) : [];
       const saved = P.upsertProfile(CONFIG_DIR, { ...input, icon: input.removeIcon ? '' : undefined });
+      const after = new Set(serverKeys(saved.id));
+      for (const key of before) if (!after.has(key)) await mgr.stopServer(key).catch(() => {});
       if (input.iconSource || input.iconDataUrl) {
         if (input.iconDataUrl && !/^data:image\/png;base64,/.test(input.iconDataUrl)) throw new Error('Unexpected icon data.');
         const img = input.iconSource ? nativeImage.createFromPath(input.iconSource) : nativeImage.createFromDataURL(input.iconDataUrl);

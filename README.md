@@ -16,6 +16,7 @@ If you use more than one Claude account on one Mac (a work seat and a personal p
 - **Every account looks the same.** Several Claude windows mean identical icons in the Dock and in ⌘Tab, so switching to the right account is guesswork.
 - **Web apps don't fill the gap.** Safari web apps keep each login separate, but links from Claude either stay trapped inside the web app or are silently dropped instead of opening in your browser. Chrome merges every claude.ai install across all your Chrome profiles into one Dock app with a profile-switching menu, so you can't give each account its own app.
 - **Folders and accounts get crossed.** Nothing stops a project's Claude Code sessions from running under the wrong account.
+- **Claude Design is one more tab per account.** Designing for a client in their account and for yourself in yours means yet more browser windows with the same icon, each needing its own sign-in.
 
 Claude Profiles fixes all of these in one app.
 
@@ -26,7 +27,7 @@ Claude Profiles fixes all of these in one app.
 - **Isolated sign-in per profile.** Each profile has its own cookies, storage and cache, so each stays signed in to its own account with no crossover.
 - **A sidebar of your accounts**, with your own icons. Click one or press ⌘1 to ⌘9.
 - **Create profiles in the app.** Give a profile a name, the email of its Claude subscription, an icon, and the working folders on your Mac its Claude Code sessions use. A setup checklist on each profile tells you what is done and what is left.
-- **Claude Design profiles too.** Add a profile that opens claude.ai/design instead of Claude Code. It can share the sign-in of a Claude Code profile on the same account, so you sign in once for both.
+- **Claude Design profiles too.** Add profiles that open Claude Design (claude.ai/design) instead of Claude Code, with a palette icon in your colour, in the same sidebar and windows as everything else. A Design profile can share the sign-in of a Claude Code profile on the same account, so one sign-in covers both.
 - **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark (Code) or palette (Design) on that colour. Or use any image you like. The marks are original, not Anthropic's logos.
 - **Remote Control servers, managed for you.** Each profile's folders get a `claude remote-control` server that runs as a launchd job, so it keeps running when the app is closed and comes back after a restart. Start, stop and restart from the **Servers** screen.
 - **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
@@ -58,6 +59,7 @@ npm run package
 When the app opens for the first time it shows the **Profiles** screen with a new profile form. Later, use **Add** at the bottom of the sidebar or **Profiles → Add Profile…**.
 
 1. **Fill in the profile.**
+   - **Type**: **Claude Code** (this section) or **Claude Design** (see [Claude Design profiles](#claude-design-profiles); it skips the folder and Terminal steps).
    - **Name**: what the sidebar shows, for example "Work".
    - **Claude account email**: the email of the Claude subscription this profile uses, on the web and in Claude Code.
    - **Icon**: pick a colour (a preset swatch, or any colour from the colour wheel) to get a white spark on that colour, or choose any image. It is used in the sidebar and as the app icon while the profile is active. A new profile without one gets a coloured spark automatically.
@@ -73,12 +75,34 @@ Now open the profile, start a new Claude Code session, and choose the environmen
 
 ## Claude Design profiles
 
-Use **Add Design profile** on the Profiles screen (or choose **Claude Design** as the type in the new profile form). A Design profile opens `https://claude.ai/design` in its own window slot, with its own icon. It is web only: there are no working folders, servers or Claude Code setup.
+A Design profile opens [Claude Design](https://claude.ai/design) in its own sidebar slot, with its own icon and sign-in, alongside your Claude Code profiles. It is web only: no working folders, servers or Claude Code setup, so its setup checklist has a single step, signing in.
 
-- **Sign-in:** either its own (sign in by email as usual), or **Share <profile>'s sign-in** to reuse a Claude Code profile on the same account. Sharing means one sign-in for both; the two profiles then always use the same account. A profile that shares a sign-in can't itself be shared, and a profile whose sign-in is shared can't be deleted until the profiles using it are changed.
-- **Icon:** a white palette on terracotta by default. Pick any colour for the background, or choose your own image.
+### Adding one
 
-**Custom marks.** To draw your own shape in the colour icons, save it as `marks/code.svg` or `marks/design.svg` in the data folder (**Profiles → Show Data Folder**). It is drawn in white, centred on the colour you pick, for new icons of that profile type. Use a single-colour SVG with a `viewBox`; `currentColor` fills become white. These files stay on your Mac, so you can use artwork you may not redistribute.
+1. On the Profiles screen press **Add Design profile**, or choose **Claude Design** as the **Type** in the new profile form.
+2. Fill in:
+   - **Name**: for example "Work Design".
+   - **Claude account email**: the account this profile signs in with.
+   - **Sign-in**: **Its own sign-in**, or **Share <profile>'s sign-in** to reuse a Claude Code profile on the same account (see below). Choosing a profile to share fills in its email.
+   - **Icon**: a white palette on terracotta unless you pick another colour, from a swatch or the colour wheel. Or choose any image.
+   - **Advanced → Start page**: `https://claude.ai/design` by default. Point it at a specific design if you always start in the same one.
+3. Press **Create profile**, then **Open profile** and [sign in by email](#signing-in-by-email). With a shared sign-in there is nothing to do if the other profile is already signed in.
+
+### Sharing a sign-in
+
+Sharing lets two profiles use one browser sign-in, so a Code profile and a Design profile on the same account need only one email sign-in between them. They then always use the same account: signing out of one signs out the other. A profile that borrows a sign-in can't lend it on, and a profile whose sign-in is in use by others can't be deleted until those profiles are changed. To stop sharing, edit the profile and set **Sign-in** back to **Its own sign-in**; it then needs its own sign-in.
+
+### Using it
+
+- **Windows and desktops:** like any profile, open it in its own window (⇧⌘ plus its number, or ⌘N while it is active) and keep it on its own desktop.
+- **App icon:** while a Design profile is active, the Dock and ⌘Tab show its palette.
+- **Links and previews:** pages on `claude.ai`, `claude.site` and `claudeusercontent.com` (where artifacts and design previews live) stay inside the profile. Everything else opens in your default browser.
+- **Changing type:** editing a profile can switch it between Claude Code and Claude Design. Switching to Design removes its folders from the profile and stops their servers; switching to Code asks for folders. (Removing a folder from a Code profile stops that folder's server the same way.)
+- **Availability:** Design profiles depend on claude.ai/design being available to your account. If it moves, change the profile's start page.
+
+### Custom marks
+
+To draw your own shape in the colour icons, save it as `marks/design.svg` (or `marks/code.svg` for Claude Code profiles) in the data folder (**Profiles → Show Data Folder**). New colour icons of that type then use your shape in white, centred on the colour you pick. Use a single-colour SVG with a `viewBox`; `currentColor` fills become white. These files stay on your Mac and are never part of the app, so you can use artwork you may not redistribute.
 
 ## Signing in by email
 
