@@ -518,12 +518,28 @@ async function describeProfiles() {
   }));
 }
 
+// Optional custom marks: marks/<kind>.svg in the data folder replaces the built-in mark for that profile type.
+// Kept out of the repo on purpose, so people can use artwork they may not redistribute.
+function customMarks() {
+  const out = {};
+  for (const kind of Object.keys(P.KINDS)) {
+    try {
+      const svg = fs.readFileSync(path.join(CONFIG_DIR, 'marks', `${kind}.svg`), 'utf8');
+      const open = svg.match(/<svg\b[^>]*>/i);
+      const viewBox = open && (open[0].match(/viewBox="([^"]+)"/i) || [])[1];
+      const inner = open && svg.slice(svg.indexOf(open[0]) + open[0].length, svg.lastIndexOf('</svg>'));
+      if (viewBox && inner) out[kind] = { viewBox, inner: inner.replace(/<script[\s\S]*?<\/script>/gi, '') };
+    } catch { /* no custom mark */ }
+  }
+  return out;
+}
+
 ipcMain.handle('editor', async (event, action, ...args) => {
   const w = fromPanel(event, PROFILES);
   if (!w) throw new Error('not allowed');
   const pick = (options) => dialog.showOpenDialog(w.win, options).then((r) => (r.canceled ? [] : r.filePaths));
   const actions = {
-    list: async () => ({ profiles: await describeProfiles(), home: require('node:os').homedir() }),
+    list: async () => ({ profiles: await describeProfiles(), home: require('node:os').homedir(), marks: customMarks() }),
     chooseFolders: () => pick({ title: 'Choose working folders', properties: ['openDirectory', 'multiSelections', 'createDirectory'] }),
     chooseConfigDir: () => pick({ title: 'Choose a Claude config folder', properties: ['openDirectory', 'showHiddenFiles', 'createDirectory'], defaultPath: require('node:os').homedir() }).then((r) => r[0] || null),
     chooseIcon: async () => {

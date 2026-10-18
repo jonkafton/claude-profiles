@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="#2b2a26"/>
-  <rect x="352" y="196" width="320" height="176" rx="44" fill="#d8bc9c"/>
-  <rect x="352" y="424" width="320" height="176" rx="44" fill="#0b3fb3"/>
-  <rect x="352" y="652" width="320" height="176" rx="44" fill="#000" stroke="#f5f4ef" stroke-width="16"/>
-  <rect x="236" y="196" width="76" height="176" rx="24" fill="#c96442"/>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#faf6ee"/><stop offset="1" stop-color="#e9e0d0"/></linearGradient></defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="185" fill="none" stroke="#000" stroke-opacity="0.08"/>
+  <g transform="rotate(-16 430 470)"><rect x="290.0" y="336.0" width="300" height="300" rx="70" fill="#000" opacity="0.13"/><rect x="280.0" y="320.0" width="300" height="300" rx="70" fill="#2b5bd7"/></g>
+  <g transform="rotate(-3 512 500)"><rect x="372.0" y="366.0" width="300" height="300" rx="70" fill="#000" opacity="0.13"/><rect x="362.0" y="350.0" width="300" height="300" rx="70" fill="#d8bc9c"/></g>
+  <g transform="rotate(11 594 548)"><rect x="454.0" y="414.0" width="300" height="300" rx="70" fill="#000" opacity="0.13"/><rect x="444.0" y="398.0" width="300" height="300" rx="70" fill="#d97757"/><g stroke="#fff" stroke-width="22.1" stroke-linecap="round"><line x1="594" y1="548" x2="594.0" y2="451.4"/><line x1="594" y1="548" x2="643.0" y2="482.4"/><line x1="594" y1="548" x2="674.2" y2="511.4"/><line x1="594" y1="548" x2="688.4" y2="568.4"/><line x1="594" y1="548" x2="655.9" y2="601.6"/><line x1="594" y1="548" x2="612.9" y2="634.2"/><line x1="594" y1="548" x2="566.8" y2="640.7"/><line x1="594" y1="548" x2="528.5" y2="597.2"/><line x1="594" y1="548" x2="506.7" y2="560.6"/><line x1="594" y1="548" x2="509.1" y2="501.8"/><line x1="594" y1="548" x2="549.7" y2="479.1"/></g><circle cx="594" cy="548" r="23.1" fill="#fff"/></g>
 </svg>

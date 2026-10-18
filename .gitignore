@@ -9,6 +9,7 @@ profiles.json
 icons/
 state/
 logs/
+marks/
 
 .DS_Store
 *.log

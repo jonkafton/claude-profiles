@@ -93,7 +93,8 @@
 
   // ---- generated icons: a white mark on a colour of your choice ----
   // Original marks, deliberately not Anthropic's logos: this app is unofficial and must not look official.
-  const SWATCHES = ['#c96442', '#d8bc9c', '#0b3fb3', '#1f1e1d', '#2f7d4f', '#7a4fd1', '#c8433a', '#1f8fa3'];
+  const SWATCHES = ['#c96442', '#d97a5c', '#d8bc9c', '#0b3fb3', '#1f1e1d', '#2f7d4f', '#7a4fd1', '#c8433a', '#1f8fa3'];
+  const DEFAULT_COLOUR = { code: null, design: '#d97a5c' }; // null: rotate through the swatches
   const MARKS = {
     // Claude Code profiles: a spark of rounded rays.
     code: () => {
@@ -106,11 +107,16 @@
       }
       return `<g stroke="#fff" stroke-width="21" stroke-linecap="round">${rays.join('')}</g><circle cx="128" cy="128" r="22" fill="#fff"/>`;
     },
-    // Claude Design profiles: a large and a small four-point sparkle.
-    design: () => '<path fill="#fff" d="M120 46C127 104 142 120 202 128C142 136 127 152 120 210C113 152 98 136 38 128C98 120 113 104 120 46Z"/>'
-      + '<path fill="#fff" d="M190 46C193 63 198 68 215 71C198 74 193 79 190 96C187 79 182 74 165 71C182 68 187 63 190 46Z"/>',
+    // Claude Design profiles: an artist's palette, drawn here (not copied from any product's artwork).
+    design: () => '<path fill="none" stroke="#fff" stroke-width="15" stroke-linejoin="round" d="M128 44C182 44 216 80 216 116C216 148 198 164 176 164C158 164 150 172 150 188C150 206 142 216 124 216C76 216 40 178 40 130C40 82 76 44 128 44Z"/>'
+      + '<g fill="#fff"><circle cx="92" cy="96" r="12"/><circle cx="134" cy="80" r="12"/><circle cx="172" cy="110" r="12"/><circle cx="84" cy="138" r="12"/></g>',
   };
-  const markSvg = (kind, bg) => `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="${bg}"/>${(MARKS[kind] || MARKS.code)()}</svg>`;
+  // A custom mark (marks/<kind>.svg in the data folder) is drawn in white, centred, in place of the built-in one.
+  let customMarks = {};
+  const markBody = (kind) => customMarks[kind]
+    ? `<svg x="44" y="44" width="168" height="168" viewBox="${customMarks[kind].viewBox}" color="#fff" fill="#fff">${customMarks[kind].inner}</svg>`
+    : (MARKS[kind] || MARKS.code)();
+  const markSvg = (kind, bg) => `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="${bg}"/>${markBody(kind)}</svg>`;
   async function markPng(kind, bg) {
     const img = new Image();
     img.src = 'data:image/svg+xml;base64,' + btoa(markSvg(kind, bg));
@@ -199,7 +205,7 @@
         h('button', { class: 'primary', onclick: async () => {
           sync();
           try {
-            if (!d.id && !d.icon && !d.iconSource) d.iconDataUrl = await markPng(d.kind, SWATCHES[profilesList.length % SWATCHES.length]);
+            if (!d.id && !d.icon && !d.iconSource) d.iconDataUrl = await markPng(d.kind, DEFAULT_COLOUR[d.kind] || SWATCHES[profilesList.length % SWATCHES.length]);
             const id = await window.editor.save({ id: d.id, kind: d.kind, name: d.name, account: d.account, shareSignIn: d.shareSignIn, folders: isCode ? d.folders : [], configDir: d.configDir, url: d.url, iconSource: d.iconSource, iconDataUrl: d.iconDataUrl, removeIcon: d.removeIcon });
             const isNew = !d.id;
             closeForm();
@@ -260,9 +266,10 @@
 
   async function refresh(highlight) {
     try {
-      const { profiles, home: hm } = await window.editor.list();
+      const { profiles, home: hm, marks } = await window.editor.list();
       home = hm;
       profilesList = profiles;
+      customMarks = marks || {};
       $('list').replaceChildren(...(profiles.length ? profiles.map((p) => card(p, p.id === highlight))
         : [h('div', { class: 'card' }, h('h2', {}, 'No profiles yet'), h('div', { class: 'sub', style: 'margin-top:4px' }, 'Add one for each Claude account you use.'))]));
       if (highlight) document.getElementById(`p-${highlight}`)?.scrollIntoView({ behavior: 'smooth' });

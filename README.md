@@ -27,7 +27,7 @@ Claude Profiles fixes all of these in one app.
 - **A sidebar of your accounts**, with your own icons. Click one or press ⌘1 to ⌘9.
 - **Create profiles in the app.** Give a profile a name, the email of its Claude subscription, an icon, and the working folders on your Mac its Claude Code sessions use. A setup checklist on each profile tells you what is done and what is left.
 - **Claude Design profiles too.** Add a profile that opens claude.ai/design instead of Claude Code. It can share the sign-in of a Claude Code profile on the same account, so you sign in once for both.
-- **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark (Code) or sparkle (Design) on that colour. Or use any image you like. The marks are original, not Anthropic's logos.
+- **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark (Code) or palette (Design) on that colour. Or use any image you like. The marks are original, not Anthropic's logos.
 - **Remote Control servers, managed for you.** Each profile's folders get a `claude remote-control` server that runs as a launchd job, so it keeps running when the app is closed and comes back after a restart. Start, stop and restart from the **Servers** screen.
 - **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
@@ -76,7 +76,9 @@ Now open the profile, start a new Claude Code session, and choose the environmen
 Use **Add Design profile** on the Profiles screen (or choose **Claude Design** as the type in the new profile form). A Design profile opens `https://claude.ai/design` in its own window slot, with its own icon. It is web only: there are no working folders, servers or Claude Code setup.
 
 - **Sign-in:** either its own (sign in by email as usual), or **Share <profile>'s sign-in** to reuse a Claude Code profile on the same account. Sharing means one sign-in for both; the two profiles then always use the same account. A profile that shares a sign-in can't itself be shared, and a profile whose sign-in is shared can't be deleted until the profiles using it are changed.
-- **Icon:** pick a colour for a white sparkle on that colour, or choose any image.
+- **Icon:** a white palette on terracotta by default. Pick any colour for the background, or choose your own image.
+
+**Custom marks.** To draw your own shape in the colour icons, save it as `marks/code.svg` or `marks/design.svg` in the data folder (**Profiles → Show Data Folder**). It is drawn in white, centred on the colour you pick, for new icons of that profile type. Use a single-colour SVG with a `viewBox`; `currentColor` fills become white. These files stay on your Mac, so you can use artwork you may not redistribute.
 
 ## Signing in by email
 
