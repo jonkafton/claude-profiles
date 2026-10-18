@@ -9,6 +9,8 @@ const path = require('node:path');
 const HOME = os.homedir();
 const DEFAULT_CONFIG_DIR = path.join(HOME, 'Library', 'Application Support', 'Claude Profiles');
 const DEFAULT_URL = 'https://claude.ai/code';
+// A profile is either Claude Code (web + working folders + Remote Control servers) or Claude Design (web only).
+const KINDS = { code: { url: DEFAULT_URL }, design: { url: 'https://claude.ai/design' } };
 
 const expand = (p) => (p && p.startsWith('~') ? path.join(HOME, p.slice(1)) : p);
 const tilde = (p) => (p && p.startsWith(HOME + path.sep) ? `~${p.slice(HOME.length)}` : p);
@@ -47,7 +49,8 @@ function writeRaw(configDir, raw) {
   fs.renameSync(tmp, file);
 }
 
-// Create or update one profile from the editor. `input` is { id?, name, account, folders[], icon?, configDir?, url? }.
+// Create or update one profile from the editor.
+// `input` is { id?, kind?, name, account, folders[], icon?, configDir?, url?, shareSignIn? }.
 function upsertProfile(configDir, input) {
   const raw = readRaw(configDir);
   const name = String(input.name || '').trim();
@@ -59,15 +62,35 @@ function upsertProfile(configDir, input) {
 
   let profile = input.id ? raw.profiles.find((p) => p.id === input.id) : null;
   if (input.id && !profile) throw new Error(`No profile "${input.id}".`);
+  const kind = input.kind || profile?.kind || 'code';
+  if (!KINDS[kind]) throw new Error(`Unknown profile type "${kind}".`);
+  const share = input.shareSignIn === undefined ? profile?.shareSignIn : input.shareSignIn || undefined;
+  if (share) {
+    const target = raw.profiles.find((p) => p.id === share);
+    if (!target || target.id === input.id) throw new Error('Choose another existing profile to share a sign-in with.');
+    if (target.shareSignIn) throw new Error(`“${target.name}” itself shares another profile’s sign-in; share with that one instead.`);
+  }
   if (!profile) {
     profile = { id: slug(name, new Set(raw.profiles.map((p) => p.id))) };
     raw.profiles.push(profile);
   }
+  const previousKind = profile.kind || 'code';
+  profile.kind = kind;
   profile.name = name;
   profile.account = account;
-  profile.url = input.url?.trim() || profile.url || DEFAULT_URL;
-  profile.configDir = tilde(expand(input.configDir?.trim()) || expand(profile.configDir) || path.join(HOME, `.claude-${profile.id}`));
+  profile.shareSignIn = share;
+  // A start page that was just the old type's default follows the type.
+  const url = input.url?.trim() || profile.url;
+  profile.url = url && !(previousKind !== kind && url === KINDS[previousKind].url) ? url : KINDS[kind].url;
   if (input.icon !== undefined) profile.icon = input.icon || undefined;
+  if (kind === 'design') {
+    // Design is web-only: no Claude Code config, folders or servers.
+    delete profile.configDir;
+    delete profile.servers;
+    writeRaw(configDir, raw);
+    return profile;
+  }
+  profile.configDir = tilde(expand(input.configDir?.trim()) || expand(profile.configDir) || path.join(HOME, `.claude-${profile.id}`));
 
   // Keep each existing folder's server id and flags; give new folders a fresh id.
   const before = profile.servers || [];
@@ -87,10 +110,12 @@ function upsertProfile(configDir, input) {
 
 function removeProfile(configDir, id) {
   const raw = readRaw(configDir);
+  const dependants = raw.profiles.filter((p) => p.shareSignIn === id).map((p) => p.name);
+  if (dependants.length) throw new Error(`${dependants.join(', ')} share${dependants.length === 1 ? 's' : ''} this profile’s sign-in. Change or delete ${dependants.length === 1 ? 'it' : 'them'} first.`);
   const before = raw.profiles.length;
   raw.profiles = raw.profiles.filter((p) => p.id !== id);
   if (raw.profiles.length === before) throw new Error(`No profile "${id}".`);
   writeRaw(configDir, raw);
 }
 
-module.exports = { DEFAULT_CONFIG_DIR, DEFAULT_URL, expand, tilde, slug, readRaw, writeRaw, upsertProfile, removeProfile };
+module.exports = { DEFAULT_CONFIG_DIR, DEFAULT_URL, KINDS, expand, tilde, slug, readRaw, writeRaw, upsertProfile, removeProfile };

@@ -26,7 +26,8 @@ const PANELS = {
 };
 // Google and others refuse sign-in from user agents that name Electron; present as the Chrome we embed.
 const CHROME_UA = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
-const CLAUDE_HOSTS = [/(^|\.)claude\.ai$/, /(^|\.)claude\.com$/, /(^|\.)anthropic\.com$/];
+// claude.site and claudeusercontent.com serve artifacts and Claude Design previews.
+const CLAUDE_HOSTS = [/(^|\.)claude\.ai$/, /(^|\.)claude\.com$/, /(^|\.)anthropic\.com$/, /(^|\.)claude\.site$/, /(^|\.)claudeusercontent\.com$/];
 // Sign-in providers Claude's login bounces through. Any other host is still allowed while a profile is
 // mid-login (see isSigningIn), so an organisation's own SSO chain works without being listed here.
 const AUTH_HOSTS = [/^accounts\.google\.com$/, /^accounts\.youtube\.com$/, /^appleid\.apple\.com$/, /^login\.microsoftonline\.com$/];
@@ -57,11 +58,17 @@ function loadConfig() {
   for (const p of raw.profiles) {
     if (!/^[a-z0-9-]+$/.test(p.id) || ids.has(p.id)) throw new Error(`bad or duplicate profile id "${p.id}"`);
     ids.add(p.id);
-    p.url ||= P.DEFAULT_URL;
+    p.kind ||= 'code';
+    p.url ||= (P.KINDS[p.kind] || P.KINDS.code).url;
     p.iconPath = p.icon ? path.resolve(CONFIG_DIR, P.expand(p.icon)) : null;
   }
+  // A profile may borrow another's sign-in; ignore a link to a profile that no longer exists.
+  for (const p of raw.profiles) if (p.shareSignIn && !ids.has(p.shareSignIn)) delete p.shareSignIn;
   return raw;
 }
+
+// The browser session a profile uses: its own, or the one it shares with another profile.
+const signInId = (p) => p.shareSignIn || p.id;
 
 function readState() {
   try { return JSON.parse(fs.readFileSync(statePath(), 'utf8')); } catch { return {}; }
@@ -131,13 +138,14 @@ function guardContents(contents) {
 }
 
 function profileSession(p) {
-  const ses = session.fromPartition(`persist:profile-${p.id}`);
-  if (!sessionsReady.has(p.id)) {
+  const sid = signInId(p);
+  const ses = session.fromPartition(`persist:profile-${sid}`);
+  if (!sessionsReady.has(sid)) {
     if (process.env.CLAUDE_PROFILES_DEBUG_NET) ses.webRequest.onCompleted({ urls: ['https://claude.ai/*', 'https://api.anthropic.com/*'] }, (d) => { if (/session|code/i.test(d.url) && !/\.(js|css|woff2?|png|svg)(\?|$)/.test(d.url)) console.log('[net]', d.method, d.statusCode, d.url.slice(0, 160)); });
     ses.setUserAgent(CHROME_UA);
     ses.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)));
     ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
-    sessionsReady.add(p.id);
+    sessionsReady.add(sid);
   }
   return ses;
 }
@@ -346,7 +354,7 @@ function buildMenu() {
         { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => activeContents()?.reload() },
         { label: 'Back', accelerator: 'CmdOrCtrl+[', click: () => activeContents()?.navigationHistory.goBack() },
         { label: 'Forward', accelerator: 'CmdOrCtrl+]', click: () => activeContents()?.navigationHistory.goForward() },
-        { label: 'Claude Code Home', accelerator: 'CmdOrCtrl+Shift+H', click: () => { const w = focusedState(); if (w && profile(w.activeId)) activeContents()?.loadURL(profile(w.activeId).url); } },
+        { label: 'Profile Home', accelerator: 'CmdOrCtrl+Shift+H', click: () => { const w = focusedState(); if (w && profile(w.activeId)) activeContents()?.loadURL(profile(w.activeId).url); } },
         { type: 'separator' },
         { label: 'Open Page in Browser', accelerator: 'CmdOrCtrl+Shift+O', click: () => { const c = activeContents(); if (c && isWeb(c.getURL())) openExternal(c.getURL()); } },
         { label: 'Copy Page Link', accelerator: 'CmdOrCtrl+Shift+C', click: () => { const c = activeContents(); if (c) clipboard.writeText(c.getURL()); } },
@@ -426,7 +434,7 @@ async function sessionTitles(profileId) {
   return map;
 }
 async function withTitles(st) {
-  const maps = Object.fromEntries(await Promise.all(config.profiles.map(async (p) => [p.id, await sessionTitles(p.id)])));
+  const maps = Object.fromEntries(await Promise.all(config.profiles.filter((p) => !p.shareSignIn).map(async (p) => [p.id, await sessionTitles(p.id)])));
   const find = (sid, prefer) => (prefer && maps[prefer]?.get(sid)) || Object.values(maps).map((m) => m.get(sid)).find(Boolean);
   const enrich = (list, prefer) => { for (const s of list) { const t = find(s.sessionId, prefer); if (t) Object.assign(s, t); } };
   for (const s of st.servers) { enrich(s.sessions, s.profileId); for (const t of s.terminal) enrich(t.sessions, s.profileId); }
@@ -493,8 +501,9 @@ async function describeProfiles() {
     const cfg = P.expand(p.configDir || '');
     const cli = cfg ? mgr.claudeConfig(cfg) : { account: null, remoteAccepted: false };
     return {
-      id: p.id, name: p.name, account: p.account || '', url: p.url || P.DEFAULT_URL, configDir: p.configDir || '', icon: iconData(p),
-      webSignedIn: await webSignedIn(p.id), cliAccount: cli.account, remoteAccepted: cli.remoteAccepted,
+      id: p.id, kind: p.kind || 'code', name: p.name, account: p.account || '', url: p.url || (P.KINDS[p.kind] || P.KINDS.code).url, configDir: p.configDir || '', icon: iconData(p),
+      shareSignIn: p.shareSignIn || null, shareName: p.shareSignIn ? raw.profiles.find((x) => x.id === p.shareSignIn)?.name || null : null,
+      webSignedIn: await webSignedIn(p.shareSignIn || p.id), cliAccount: cli.account, remoteAccepted: cli.remoteAccepted,
       folders: (p.servers || []).map((s) => ({ folder: P.expand(s.folder), display: s.folder, key: `${p.id}-${s.id}`, trusted: cfg ? mgr.claudeConfig(cfg, P.expand(s.folder)).trusted : false })),
     };
   }));

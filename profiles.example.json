@@ -28,6 +28,15 @@
         { "id": "client-acme-web", "folder": "~/code/client-acme-web", "args": ["--capacity", "50"] },
         { "id": "client-acme-api", "folder": "~/code/client-acme-api" }
       ]
+    },
+    {
+      "id": "acme-design",
+      "kind": "design",
+      "name": "Acme Design",
+      "account": "alice@acme.example",
+      "shareSignIn": "acme",
+      "icon": "icons/acme-design.png",
+      "url": "https://claude.ai/design"
     }
   ]
 }

@@ -48,6 +48,11 @@
   ol.steps > li.done::before { content: "✓"; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
   ol.steps > li.bad::before { content: "!"; background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
   .state { font-size: 12px; } .state.ok { color: var(--ok); } .state.bad { color: var(--bad); } .state.warn { color: var(--warn); }
+  .kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .kind { text-align: left; padding: 10px 12px; border-radius: 9px; display: flex; flex-direction: column; gap: 3px; }
+  .kind.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .kind .hint { margin: 0; }
+  select { width: 100%; font: inherit; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--field); color: var(--ink); }
   .swatches { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .swatch { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; padding: 0; }
   .swatch:hover, .swatch:focus-visible { border-color: var(--ink); }
@@ -59,7 +64,8 @@
 <body>
 <main>
   <header>
-    <div class="grow"><h1>Profiles</h1><div class="sub">Each profile is one Claude account: its own sign-in, its own icon, and the folders on this Mac its Claude Code sessions work in.</div></div>
+    <div class="grow"><h1>Profiles</h1><div class="sub">Each profile is one Claude workspace with its own sign-in and icon: Claude Code (with folders on this Mac) or Claude Design.</div></div>
+    <button id="add-design">Add Design profile</button>
     <button class="primary" id="add">Add profile</button>
   </header>
   <div class="callout"><strong>Sign in by email.</strong> Google and Apple sign-in do not work inside apps like this one. On the Claude sign-in page choose <em>Continue with email</em>, then open the link in the email: in your normal browser it shows a verification code. Type that code into this app.</div>
@@ -85,33 +91,43 @@
   const tilde = (p) => (home && p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
   const avatar = (icon, name) => icon ? h('img', { class: 'avatar', src: icon, alt: '' }) : h('div', { class: 'avatar' }, (name || '?')[0].toUpperCase());
 
-  // ---- generated icons: an original white spark on a colour of your choice ----
-  // Deliberately not Anthropic's logo: this app is unofficial and must not look like an official product.
+  // ---- generated icons: a white mark on a colour of your choice ----
+  // Original marks, deliberately not Anthropic's logos: this app is unofficial and must not look official.
   const SWATCHES = ['#c96442', '#d8bc9c', '#0b3fb3', '#1f1e1d', '#2f7d4f', '#7a4fd1', '#c8433a', '#1f8fa3'];
-  function sparkSvg(bg) {
-    const rays = [];
-    for (let i = 0; i < 11; i++) {
-      const a = (i * 360) / 11 - 90 + (i % 2 ? 4 : 0);
-      const len = i % 3 === 0 ? 92 : i % 3 === 1 ? 78 : 84;
-      const rad = (a * Math.PI) / 180;
-      rays.push(`<line x1="128" y1="128" x2="${(128 + Math.cos(rad) * len).toFixed(1)}" y2="${(128 + Math.sin(rad) * len).toFixed(1)}"/>`);
-    }
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="${bg}"/><g stroke="#fff" stroke-width="21" stroke-linecap="round">${rays.join('')}</g><circle cx="128" cy="128" r="22" fill="#fff"/></svg>`;
-  }
-  async function sparkPng(bg) {
+  const MARKS = {
+    // Claude Code profiles: a spark of rounded rays.
+    code: () => {
+      const rays = [];
+      for (let i = 0; i < 11; i++) {
+        const a = (i * 360) / 11 - 90 + (i % 2 ? 4 : 0);
+        const len = i % 3 === 0 ? 92 : i % 3 === 1 ? 78 : 84;
+        const rad = (a * Math.PI) / 180;
+        rays.push(`<line x1="128" y1="128" x2="${(128 + Math.cos(rad) * len).toFixed(1)}" y2="${(128 + Math.sin(rad) * len).toFixed(1)}"/>`);
+      }
+      return `<g stroke="#fff" stroke-width="21" stroke-linecap="round">${rays.join('')}</g><circle cx="128" cy="128" r="22" fill="#fff"/>`;
+    },
+    // Claude Design profiles: a large and a small four-point sparkle.
+    design: () => '<path fill="#fff" d="M120 46C127 104 142 120 202 128C142 136 127 152 120 210C113 152 98 136 38 128C98 120 113 104 120 46Z"/>'
+      + '<path fill="#fff" d="M190 46C193 63 198 68 215 71C198 74 193 79 190 96C187 79 182 74 165 71C182 68 187 63 190 46Z"/>',
+  };
+  const markSvg = (kind, bg) => `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="${bg}"/>${(MARKS[kind] || MARKS.code)()}</svg>`;
+  async function markPng(kind, bg) {
     const img = new Image();
-    img.src = 'data:image/svg+xml;base64,' + btoa(sparkSvg(bg));
+    img.src = 'data:image/svg+xml;base64,' + btoa(markSvg(kind, bg));
     await img.decode();
     const canvas = Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
     canvas.getContext('2d').drawImage(img, 0, 0, 256, 256);
     return canvas.toDataURL('image/png');
   }
+  const KIND_LABEL = { code: 'Claude Code', design: 'Claude Design' };
 
   // ---- the add/edit form ----
-  let draft = null; // { id?, name, account, folders[], configDir, url, icon (preview), iconSource, removeIcon }
-  function openForm(p) {
-    draft = p ? { id: p.id, name: p.name, account: p.account, folders: p.folders.map((f) => f.folder), configDir: p.configDir, url: p.url, icon: p.icon }
-              : { name: '', account: '', folders: [], configDir: '', url: '', icon: null };
+  let profilesList = [];
+  // { id?, kind, name, account, shareSignIn, folders[], configDir, url, icon (preview), colour?, iconSource, iconDataUrl, removeIcon }
+  let draft = null;
+  function openForm(p, kind) {
+    draft = p ? { id: p.id, kind: p.kind, name: p.name, account: p.account, shareSignIn: p.shareSignIn || '', folders: p.folders.map((f) => f.folder), configDir: p.configDir, url: p.url, icon: p.icon }
+              : { kind: kind || 'code', name: '', account: '', shareSignIn: '', folders: [], configDir: '', url: '', icon: null };
     renderForm();
     $('form').scrollIntoView({ behavior: 'smooth' });
     setTimeout(() => $('f-name')?.focus(), 50);
@@ -120,45 +136,71 @@
   function renderForm(error) {
     if (!draft) { $('form').replaceChildren(); return; }
     const d = draft;
-    const sync = () => { d.name = $('f-name').value; d.account = $('f-account').value; d.configDir = $('f-config').value; d.url = $('f-url').value; };
-    const useColour = async (c) => { sync(); d.colour = c; d.iconDataUrl = await sparkPng(c); d.icon = d.iconDataUrl; d.iconSource = null; d.removeIcon = false; renderForm(); };
+    const isCode = d.kind === 'code';
+    const sync = () => {
+      d.name = $('f-name').value; d.account = $('f-account').value; d.url = $('f-url').value;
+      if ($('f-config')) d.configDir = $('f-config').value;
+    };
+    const useColour = async (c) => { sync(); d.colour = c; d.iconDataUrl = await markPng(d.kind, c); d.icon = d.iconDataUrl; d.iconSource = null; d.removeIcon = false; renderForm(); };
+    const setKind = async (k) => { sync(); if (d.url === (d.kind === 'design' ? 'https://claude.ai/design' : 'https://claude.ai/code')) d.url = ''; d.kind = k; if (d.colour && d.iconDataUrl) { d.iconDataUrl = await markPng(k, d.colour); d.icon = d.iconDataUrl; } renderForm(); };
+    // Only profiles with their own sign-in can be shared, and never the profile itself.
+    const shareable = profilesList.filter((p) => !p.shareSignIn && p.id !== d.id);
     $('form').replaceChildren(h('div', { class: 'card' },
       h('h2', {}, d.id ? `Edit ${d.name}` : 'New profile'),
+      h('label', {}, 'Type'),
+      h('div', { class: 'kinds' },
+        ['code', 'design'].map((k) => h('button', { class: `kind${d.kind === k ? ' on' : ''}`, onclick: () => setKind(k) },
+          h('strong', {}, KIND_LABEL[k]),
+          h('span', { class: 'hint' }, k === 'code' ? 'claude.ai/code, plus Remote Control servers for folders on this Mac.' : 'claude.ai/design in its own profile. Web only.')))),
       h('label', { for: 'f-name' }, 'Name'),
-      h('input', { type: 'text', id: 'f-name', value: d.name, placeholder: 'e.g. Work, Personal, Client X' }),
+      h('input', { type: 'text', id: 'f-name', value: d.name, placeholder: isCode ? 'e.g. Work, Personal, Client X' : 'e.g. Work Design' }),
       h('label', { for: 'f-account' }, 'Claude account email'),
       h('input', { type: 'email', id: 'f-account', value: d.account, placeholder: 'you@example.com' }),
-      h('div', { class: 'hint' }, 'The email of the Claude subscription this profile signs in with, on the web and in Claude Code.'),
+      h('div', { class: 'hint' }, isCode ? 'The email of the Claude subscription this profile signs in with, on the web and in Claude Code.' : 'The email of the Claude account this profile signs in with.'),
+      h('label', { for: 'f-share' }, 'Sign-in'),
+      h('select', { id: 'f-share', onchange: (e) => {
+          sync(); d.shareSignIn = e.target.value;
+          const t = shareable.find((p) => p.id === d.shareSignIn);
+          if (t) d.account = t.account;
+          renderForm();
+        } },
+        h('option', { value: '' }, 'Its own sign-in'),
+        shareable.map((p) => h('option', { value: p.id, ...(d.shareSignIn === p.id ? { selected: true } : {}) }, `Share ${p.name}’s sign-in (${p.account})`))),
+      h('div', { class: 'hint' }, 'Sharing reuses another profile’s sign-in on the same account, so you sign in once for both. Both profiles then always use the same account.'),
       h('label', {}, 'Icon'),
       h('div', { class: 'row' }, avatar(d.icon, d.name),
-        h('button', { onclick: async () => { sync(); try { const r = await window.editor.chooseIcon(); if (r) { d.icon = r.preview; d.iconSource = r.source; d.iconDataUrl = null; d.removeIcon = false; renderForm(); } } catch (e) { renderForm(errText(e)); } } }, 'Choose image…'),
-        d.icon ? h('button', { onclick: () => { sync(); d.icon = null; d.iconSource = null; d.iconDataUrl = null; d.removeIcon = true; renderForm(); } }, 'Remove') : null),
+        h('button', { onclick: async () => { sync(); try { const r = await window.editor.chooseIcon(); if (r) { d.icon = r.preview; d.iconSource = r.source; d.iconDataUrl = null; d.colour = null; d.removeIcon = false; renderForm(); } } catch (e) { renderForm(errText(e)); } } }, 'Choose image…'),
+        d.icon ? h('button', { onclick: () => { sync(); d.icon = null; d.iconSource = null; d.iconDataUrl = null; d.colour = null; d.removeIcon = true; renderForm(); } }, 'Remove') : null),
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('span', { class: 'hint', style: 'margin:0' }, 'Or pick a colour:'),
         h('div', { class: 'swatches' },
           SWATCHES.map((c) => h('button', { class: 'swatch', title: c, style: `background:${c}`, onclick: () => useColour(c) })),
           h('input', { type: 'color', title: 'Any colour', value: d.colour || '#c96442', oninput: (e) => useColour(e.target.value) }))),
       h('div', { class: 'hint' }, 'Shown in the sidebar, and as the app icon in the Dock and ⌘Tab while this profile is active.'),
-      h('label', {}, 'Working folders'),
-      h('div', { class: 'hint' }, 'Folders on this Mac where this account’s Claude Code sessions run. Each folder gets its own Remote Control server.'),
-      d.folders.length ? h('div', { class: 'folders' }, d.folders.map((f, i) => h('div', { class: 'row' },
-        h('span', { class: 'folder grow' }, tilde(f)),
-        h('button', { class: 'link', onclick: () => { sync(); d.folders.splice(i, 1); renderForm(); } }, 'Remove')))) : null,
-      h('div', { style: 'margin-top:6px' }, h('button', { onclick: async () => { sync(); const picked = await window.editor.chooseFolders(); d.folders = [...new Set([...d.folders, ...picked])]; renderForm(); } }, 'Add folders…')),
+      isCode ? [
+        h('label', {}, 'Working folders'),
+        h('div', { class: 'hint' }, 'Folders on this Mac where this account’s Claude Code sessions run. Each folder gets its own Remote Control server.'),
+        d.folders.length ? h('div', { class: 'folders' }, d.folders.map((f, i) => h('div', { class: 'row' },
+          h('span', { class: 'folder grow' }, tilde(f)),
+          h('button', { class: 'link', onclick: () => { sync(); d.folders.splice(i, 1); renderForm(); } }, 'Remove')))) : null,
+        h('div', { style: 'margin-top:6px' }, h('button', { onclick: async () => { sync(); const picked = await window.editor.chooseFolders(); d.folders = [...new Set([...d.folders, ...picked])]; renderForm(); } }, 'Add folders…')),
+      ] : null,
       h('details', {}, h('summary', {}, 'Advanced'),
-        h('label', { for: 'f-config' }, 'Claude Code config folder'),
-        h('div', { class: 'row' }, h('input', { type: 'text', id: 'f-config', class: 'grow', value: d.configDir, placeholder: d.id ? '' : '~/.claude-<profile id> (created for you)' }),
-          h('button', { onclick: async () => { sync(); const dir = await window.editor.chooseConfigDir(); if (dir) { d.configDir = tilde(dir); renderForm(); } } }, 'Choose…')),
-        h('div', { class: 'hint' }, 'Where Claude Code keeps this account’s login and settings (CLAUDE_CONFIG_DIR). Leave empty for a new, separate one. Point it at an existing folder, such as ~/.claude, to reuse a login you already have.'),
+        isCode ? [
+          h('label', { for: 'f-config' }, 'Claude Code config folder'),
+          h('div', { class: 'row' }, h('input', { type: 'text', id: 'f-config', class: 'grow', value: d.configDir, placeholder: d.id ? '' : '~/.claude-<profile id> (created for you)' }),
+            h('button', { onclick: async () => { sync(); const dir = await window.editor.chooseConfigDir(); if (dir) { d.configDir = tilde(dir); renderForm(); } } }, 'Choose…')),
+          h('div', { class: 'hint' }, 'Where Claude Code keeps this account’s login and settings (CLAUDE_CONFIG_DIR). Leave empty for a new, separate one. Point it at an existing folder, such as ~/.claude, to reuse a login you already have.'),
+        ] : null,
         h('label', { for: 'f-url' }, 'Start page'),
-        h('input', { type: 'text', id: 'f-url', value: d.url, placeholder: 'https://claude.ai/code' })),
+        h('input', { type: 'text', id: 'f-url', value: d.url, placeholder: isCode ? 'https://claude.ai/code' : 'https://claude.ai/design' })),
       error ? h('div', { class: 'error' }, error) : null,
       h('div', { class: 'actions' },
         h('button', { class: 'primary', onclick: async () => {
           sync();
           try {
-            if (!d.id && !d.icon && !d.iconSource) d.iconDataUrl = await sparkPng(SWATCHES[document.querySelectorAll('#list .card[id]').length % SWATCHES.length]);
-            const id = await window.editor.save({ id: d.id, name: d.name, account: d.account, folders: d.folders, configDir: d.configDir, url: d.url, iconSource: d.iconSource, iconDataUrl: d.iconDataUrl, removeIcon: d.removeIcon });
+            if (!d.id && !d.icon && !d.iconSource) d.iconDataUrl = await markPng(d.kind, SWATCHES[profilesList.length % SWATCHES.length]);
+            const id = await window.editor.save({ id: d.id, kind: d.kind, name: d.name, account: d.account, shareSignIn: d.shareSignIn, folders: isCode ? d.folders : [], configDir: d.configDir, url: d.url, iconSource: d.iconSource, iconDataUrl: d.iconDataUrl, removeIcon: d.removeIcon });
             const isNew = !d.id;
             closeForm();
             await refresh(id);
@@ -167,7 +209,7 @@
         } }, d.id ? 'Save' : 'Create profile'),
         h('button', { onclick: closeForm }, 'Cancel'),
         d.id ? h('button', { class: 'danger', style: 'margin-left:auto', onclick: async () => {
-          if (!confirm(`Delete the profile “${d.name}”? Its servers are stopped. Its sign-in data stays on this Mac, so re-adding a profile with the same name signs straight back in.`)) return;
+          if (!confirm(`Delete the profile “${d.name}”? ${isCode ? 'Its servers are stopped. ' : ''}Its sign-in data stays on this Mac, so re-adding a profile with the same name signs straight back in.`)) return;
           try { await window.editor.remove(d.id); closeForm(); refresh(); toast('Profile deleted.'); } catch (e) { renderForm(errText(e)); }
         } }, 'Delete profile') : null)));
   }
@@ -177,27 +219,38 @@
     return h('li', { class: done ? 'done' : bad ? 'bad' : '' }, h('div', {}, h('div', {}, title), detail ? h('div', { class: 'hint' }, detail) : null), h('div', { class: 'row' }, ...buttons));
   }
   const terminalResult = (r) => toast(r.ran ? 'Opened in Terminal. Come back here when it is done; this page updates itself.' : `Copied to the clipboard. Paste it into Terminal: ${r.command}`);
+  function signInStep(p) {
+    if (p.shareSignIn) {
+      return step(p.webSignedIn, false, `Uses ${p.shareName || 'another profile'}’s sign-in`,
+        p.webSignedIn ? 'Signed in.' : `Sign in to ${p.shareName || 'that profile'} first; this profile follows it.`,
+        p.webSignedIn ? null : h('button', { onclick: () => window.editor.openProfile(p.shareSignIn) }, `Open ${p.shareName || 'it'}`));
+    }
+    return step(p.webSignedIn, false, 'Sign in to Claude in this profile',
+      p.webSignedIn ? 'Signed in.' : `Open the profile and choose “Continue with email” with ${p.account}. Open the link in the email (it shows a code in your normal browser) and type the code into the app.`,
+      p.webSignedIn ? null : h('button', { class: 'primary', onclick: () => window.editor.openProfile(p.id) }, 'Open profile'));
+  }
   function card(p, highlight) {
+    const isCode = p.kind !== 'design';
+    const sub = isCode ? `${p.account} · ${p.folders.length} folder${p.folders.length === 1 ? '' : 's'} · ${p.configDir}` : `${p.account} · Claude Design`;
+    const head = h('div', { class: 'row' }, avatar(p.icon, p.name),
+      h('div', { class: 'grow' }, h('h2', {}, p.name), h('div', { class: 'sub' }, sub + (p.shareName ? ` · shares ${p.shareName}’s sign-in` : ''))),
+      h('button', { onclick: () => window.editor.openProfile(p.id) }, 'Open'),
+      h('button', { onclick: () => openForm(p) }, 'Edit'));
+    if (!isCode) return h('div', { class: 'card', id: `p-${p.id}`, style: highlight ? 'border-color: var(--accent)' : '' }, head, h('h3', {}, 'Setup'), h('ol', { class: 'steps' }, signInStep(p)));
     const cliOk = p.cliAccount && p.cliAccount.toLowerCase() === p.account.toLowerCase();
     const cliWrong = p.cliAccount && !cliOk;
     const allTrusted = p.folders.length > 0 && p.folders.every((f) => f.trusted) && p.remoteAccepted;
     return h('div', { class: 'card', id: `p-${p.id}`, style: highlight ? 'border-color: var(--accent)' : '' },
-      h('div', { class: 'row' }, avatar(p.icon, p.name),
-        h('div', { class: 'grow' }, h('h2', {}, p.name), h('div', { class: 'sub' }, `${p.account} · ${p.folders.length} folder${p.folders.length === 1 ? '' : 's'} · ${p.configDir}`)),
-        h('button', { onclick: () => window.editor.openProfile(p.id) }, 'Open'),
-        h('button', { onclick: () => openForm(p) }, 'Edit')),
+      head,
       h('h3', {}, 'Setup'),
       h('ol', { class: 'steps' },
-        step(p.webSignedIn, false, 'Sign in to Claude in this profile',
-          p.webSignedIn ? 'Signed in.' : `Open the profile and choose “Continue with email” with ${p.account}. Open the link in the email (it shows a code in your normal browser) and type the code into the app.`,
-          p.webSignedIn ? null : h('button', { class: 'primary', onclick: () => window.editor.openProfile(p.id) }, 'Open profile')),
+        signInStep(p),
         step(cliOk, cliWrong, `Sign Claude Code in as ${p.account}`,
           cliOk ? `Signed in as ${p.cliAccount}.` : cliWrong ? `Signed in as ${p.cliAccount}, not ${p.account}. Run /logout in Claude Code, then sign in again.` :
             'Opens Claude Code in Terminal with this profile’s config. Choose the Claude account option. When it shows a sign-in link, copy it and press ⇧⌘V in this profile so the right account approves it, then paste the code back into Terminal. Type /exit when done.',
           cliOk ? null : h('button', { onclick: () => window.editor.cliLogin(p.id).then(terminalResult) }, 'Sign in in Terminal')),
         step(allTrusted, false, 'Trust each folder and allow Remote Control',
-          p.folders.length ? null : 'Add a working folder (Edit) first.',
-          ...[]),
+          p.folders.length ? null : 'Add a working folder (Edit) first.'),
         ...p.folders.map((f) => h('li', { class: `substep${f.trusted && p.remoteAccepted ? ' done' : ''}` },
           h('div', {}, h('div', { class: 'folder' }, tilde(f.folder)), h('div', { class: 'hint' }, f.trusted && p.remoteAccepted ? 'Ready.' : 'Opens Terminal in this folder. Answer y to “Trust this folder?” and to “Enable Remote Control?”, wait for “Ready”, then press Ctrl+C.')),
           h('div', { class: 'row' }, f.trusted && p.remoteAccepted ? null : h('button', { onclick: () => window.editor.trustFolder(p.id, f.folder).then(terminalResult) }, 'Set up in Terminal')))),
@@ -209,12 +262,14 @@
     try {
       const { profiles, home: hm } = await window.editor.list();
       home = hm;
+      profilesList = profiles;
       $('list').replaceChildren(...(profiles.length ? profiles.map((p) => card(p, p.id === highlight))
         : [h('div', { class: 'card' }, h('h2', {}, 'No profiles yet'), h('div', { class: 'sub', style: 'margin-top:4px' }, 'Add one for each Claude account you use.'))]));
       if (highlight) document.getElementById(`p-${highlight}`)?.scrollIntoView({ behavior: 'smooth' });
     } catch (e) { toast(errText(e)); }
   }
-  $('add').addEventListener('click', () => openForm(null));
+  $('add').addEventListener('click', () => openForm(null, 'code'));
+  $('add-design').addEventListener('click', () => openForm(null, 'design'));
   window.editor.onNew(() => openForm(null));
   refresh();
   // Pick up sign-ins and Terminal setup done elsewhere, unless a form is open.

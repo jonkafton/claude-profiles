@@ -1,6 +1,6 @@
 # Claude Profiles
 
-An unofficial macOS app for running several Claude accounts side by side, each in its own isolated, signed-in workspace, with your Claude Code Remote Control servers managed from the same place.
+An unofficial macOS app for running several Claude accounts side by side, each in its own isolated, signed-in workspace (Claude Code or Claude Design), with your Claude Code Remote Control servers managed from the same place.
 
 > **Not affiliated with Anthropic.** Claude and Claude Code are trademarks of Anthropic. This is an independent tool that wraps claude.ai in a desktop shell and drives the official `claude` CLI.
 
@@ -26,7 +26,8 @@ Claude Profiles fixes all of these in one app.
 - **Isolated sign-in per profile.** Each profile has its own cookies, storage and cache, so each stays signed in to its own account with no crossover.
 - **A sidebar of your accounts**, with your own icons. Click one or press ⌘1 to ⌘9.
 - **Create profiles in the app.** Give a profile a name, the email of its Claude subscription, an icon, and the working folders on your Mac its Claude Code sessions use. A setup checklist on each profile tells you what is done and what is left.
-- **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark on that colour. Or use any image you like.
+- **Claude Design profiles too.** Add a profile that opens claude.ai/design instead of Claude Code. It can share the sign-in of a Claude Code profile on the same account, so you sign in once for both.
+- **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark (Code) or sparkle (Design) on that colour. Or use any image you like. The marks are original, not Anthropic's logos.
 - **Remote Control servers, managed for you.** Each profile's folders get a `claude remote-control` server that runs as a launchd job, so it keeps running when the app is closed and comes back after a restart. Start, stop and restart from the **Servers** screen.
 - **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
@@ -69,6 +70,13 @@ When the app opens for the first time it shows the **Profiles** screen with a ne
 6. **Start the servers.** Press **Open Servers** and **Start** each folder's server.
 
 Now open the profile, start a new Claude Code session, and choose the environment named after your folder, shown as `<folder> · <your Mac's name>`. The same sessions are reachable from the Claude app on your phone or any browser signed in to that account.
+
+## Claude Design profiles
+
+Use **Add Design profile** on the Profiles screen (or choose **Claude Design** as the type in the new profile form). A Design profile opens `https://claude.ai/design` in its own window slot, with its own icon. It is web only: there are no working folders, servers or Claude Code setup.
+
+- **Sign-in:** either its own (sign in by email as usual), or **Share <profile>'s sign-in** to reuse a Claude Code profile on the same account. Sharing means one sign-in for both; the two profiles then always use the same account. A profile that shares a sign-in can't itself be shared, and a profile whose sign-in is shared can't be deleted until the profiles using it are changed.
+- **Icon:** pick a colour for a white sparkle on that colour, or choose any image.
 
 ## Signing in by email
 
@@ -120,7 +128,9 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 | Key | Meaning |
 |---|---|
 | `profiles[].id` | Fixed when the profile is created. It names the profile's sign-in storage, so changing it signs that profile out. |
-| `profiles[].name`, `account`, `icon`, `url` | Sidebar name, Claude account email, icon file (relative to the data folder), start page. |
+| `profiles[].kind` | `code` (default) or `design`. Design profiles have no `configDir` or `servers`. |
+| `profiles[].name`, `account`, `icon`, `url` | Sidebar name, Claude account email, icon file (relative to the data folder), start page (default `https://claude.ai/code`, or `https://claude.ai/design` for Design). |
+| `profiles[].shareSignIn` | Optional id of another profile whose sign-in this one reuses. |
 | `profiles[].configDir` | The profile's Claude Code config folder (`CLAUDE_CONFIG_DIR`). Must be signed in to `account`. |
 | `profiles[].servers[]` | One entry per working folder: `id`, `folder`, and optional extra `args` for `claude remote-control` (for example `["--capacity", "100"]`). |
 | `dockIconFollowsProfile` | `false` keeps the app's own icon instead of the active profile's. |
