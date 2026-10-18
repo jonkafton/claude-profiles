@@ -194,7 +194,7 @@ Servers started from a source run point at the development copy of Electron, so 
 | `CLAUDE_PROFILES_DIR` | Use another data folder for `profiles.json`, icons, state and logs. |
 | `CLAUDE_PROFILES_USER_DATA` | Use another folder for sign-ins and window state. |
 | `CLAUDE_PROFILES_LABEL_PREFIX` | Use another launchd label prefix, so test servers never touch real ones. |
-| `CLAUDE_PROFILES_DEBUG=1` | Log the sidebar's console. With `CLAUDE_PROFILES_DEBUG_CLICK=<id>`, `CLAUDE_PROFILES_DEBUG_EVAL=<js>`, `CLAUDE_PROFILES_DEBUG_SHOT=<path>` and `CLAUDE_PROFILES_DEBUG_CLOSE_FIRST=1`, click a sidebar item, run a script in the active view, save screenshots, and close the first window. |
+| `CLAUDE_PROFILES_DEBUG=1` | Log the sidebar's console. With `CLAUDE_PROFILES_DEBUG_CLICK=<id>`, `CLAUDE_PROFILES_DEBUG_EVAL=<js>`, `CLAUDE_PROFILES_DEBUG_SHOT=<path>` and `CLAUDE_PROFILES_DEBUG_CLOSE_FIRST=1` / `CLAUDE_PROFILES_DEBUG_QUIT=1`, click a sidebar item, run a script in the active view, save screenshots, close the first window, or quit. |
 | `CLAUDE_PROFILES_DEBUG_NET=1` | Log claude.ai API requests made by profile pages. |
 
 ## License

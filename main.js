@@ -151,6 +151,7 @@ function profileSession(p) {
 }
 
 function layout(w) {
+  if (w.win.isDestroyed()) return;
   const { width, height } = w.win.getContentBounds();
   w.sidebar.setBounds({ x: 0, y: 0, width: SIDEBAR_WIDTH, height });
   for (const view of w.views.values()) view.setBounds({ x: SIDEBAR_WIDTH, y: 0, width: Math.max(0, width - SIDEBAR_WIDTH), height });
@@ -190,6 +191,7 @@ function dropView(w, id) {
 }
 
 function updateTitle(w) {
+  if (w.win.isDestroyed()) return;
   if (isPanel(w.activeId)) { w.win.setTitle(PANELS[w.activeId].title); return; }
   const p = profile(w.activeId);
   const page = w.views.get(w.activeId)?.webContents.getTitle() || 'Claude';
@@ -199,6 +201,7 @@ function updateTitle(w) {
 // The app icon (Dock and ⌘Tab) takes on the active profile's icon, so the switcher shows which account
 // you are about to land in.
 function syncDockIcon(w) {
+  if (!w || w.win.isDestroyed()) return;
   const p = profile(w?.activeId);
   if (config.dockIconFollowsProfile === false || !p?.iconPath || process.platform !== 'darwin') return;
   const img = nativeImage.createFromPath(p.iconPath);
@@ -261,6 +264,10 @@ function createWindow({ activeId, bounds } = {}) {
     if (tornDown) return;
     tornDown = true;
     windows.delete(win.id);
+    // Late resize/move/focus events from a closing window must not reach code that reads it.
+    win.removeAllListeners('resize');
+    win.removeAllListeners('moved');
+    win.removeAllListeners('focus');
     // A BaseWindow does not close its views' pages; detach each view while the window exists, then close it.
     for (const v of [sidebar, ...w.views.values()]) {
       try { win.contentView.removeChildView(v); } catch { /* not attached */ }
@@ -283,6 +290,8 @@ function createWindow({ activeId, bounds } = {}) {
     if (click) sidebar.webContents.once('did-finish-load', () => setTimeout(() => sidebar.webContents.executeJavaScript(`document.querySelector('[data-id="${click}"]')?.click()`), 3000));
     // Screenshots without screen-recording permission: the sidebar and the active view, as PNGs.
     const shot = process.env.CLAUDE_PROFILES_DEBUG_SHOT;
+    // Quit after a delay with every window open, to test teardown on quit.
+    if (process.env.CLAUDE_PROFILES_DEBUG_QUIT && windows.size === 1) setTimeout(() => { console.log('[debug] quitting'); app.quit(); }, 8000);
     // Close this window after a delay, to test window teardown.
     if (process.env.CLAUDE_PROFILES_DEBUG_CLOSE_FIRST && windows.size === 1) setTimeout(() => { console.log('[debug] closing first window'); win.close(); setTimeout(() => console.log('[debug] after close: destroyed', win.isDestroyed(), 'visible', !win.isDestroyed() && win.isVisible()), 2000); }, 6000);
     // Run a script in the active view, to drive a screen in tests.
