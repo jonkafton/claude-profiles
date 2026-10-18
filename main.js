@@ -175,6 +175,8 @@ function viewFor(w, id) {
   });
   guardContents(view.webContents);
   view.webContents.on('page-title-updated', () => { if (w.activeId === p.id) updateTitle(w); });
+  view.webContents.on('did-navigate', () => continueIfStranded(view.webContents, p));
+  view.webContents.on('did-navigate-in-page', () => continueIfStranded(view.webContents, p));
   w.win.contentView.addChildView(view);
   w.views.set(p.id, view);
   layout(w);
@@ -240,6 +242,34 @@ function select(w, id) {
   if (w.win.isFocused()) syncDockIcon(w);
   w.sidebar.webContents.send('active', id);
   saveWindows();
+  if (profile(id)) continueIfStranded(view.webContents, profile(id));
+}
+
+// Opening a Remote Control session that no server can reach any more (its server restarted into a new
+// environment) carries it on as a new session from its transcript and shows that instead.
+const continuing = new Map(); // session ID -> time of the last attempt
+async function continueIfStranded(contents, p) {
+  const m = contents.getURL().match(/^https:\/\/claude\.ai\/code\/(?:session_|cse_)([A-Za-z0-9]+)/);
+  if (!m) return;
+  const id = `cse_${m[1]}`;
+  if (Date.now() - (continuing.get(id) || 0) < 120000) return;
+  continuing.set(id, Date.now());
+  try {
+    const r = await session.fromPartition(`persist:profile-${signInId(p)}`).fetch('https://claude.ai/v1/code/sessions?statuses=active&statuses=paused&limit=100', {
+      credentials: 'include',
+      headers: { 'anthropic-version': '2023-06-01', 'anthropic-client-platform': 'web_claude_ai' },
+    });
+    const record = r.ok ? ((await r.json()).data || []).find((x) => x.id === id) : null;
+    if (!record) return;
+    const result = await mgr.continueSession([p.id, signInId(p)], record);
+    if (!result.sessionId) return;
+    console.log(`[continue] ${id} -> ${result.sessionId}`);
+    // Only move the view if it is still on the stranded session.
+    if (!contents.isDestroyed() && contents.getURL().includes(m[1])) contents.loadURL(`https://claude.ai/code/${result.sessionId.replace(/^cse_/, 'session_')}`);
+    setTimeout(pushStatus, 1500);
+  } catch (e) {
+    console.log('[continue] failed', id, e.message);
+  }
 }
 
 // Open the Profiles screen with a blank "new profile" form.

@@ -4,7 +4,7 @@
 // logic ships inside the app. Servers are launchd jobs, so they keep running when the app quits.
 'use strict';
 
-const { execFile, spawn } = require('node:child_process');
+const { execFile, execFileSync, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -16,6 +16,8 @@ const AGENTS = path.join(HOME, 'Library', 'LaunchAgents');
 const DEFAULT_LABEL_PREFIX = 'io.github.jonkafton.claude-profiles';
 const LOG_LINES = 5000;
 const CLEANUP_DEFAULTS = { idleHours: 3, idleCpuPerHour: 30, includeDesktop: false };
+// How long a stopping server gets to shut down cleanly. remote-control gives its sessions 30s to finish.
+const SHUTDOWN_GRACE_S = 45;
 
 const { expand, readRaw } = require('./profiles');
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
@@ -33,6 +35,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   const parkedDir = path.join(stateDir, 'launchd');
   const settingsFile = path.join(stateDir, 'settings.json');
   const reapStateFile = path.join(stateDir, 'reap.json');
+  const continuedFile = path.join(stateDir, 'continued.json');
   const logFile = path.join(logsDir, 'manager.log');
   const gui = `gui/${process.getuid()}`;
   // launchd labels; profiles.json may set launchdLabelPrefix, e.g. to keep jobs created under an older name.
@@ -90,6 +93,9 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     };
   }
 
+  // The environment a folder's server registered, from the pointer the CLI keeps for it.
+  const currentEnvironment = (s) => readJson(path.join(s.configDir, 'projects', s.folder.replace(/[^A-Za-z0-9]/g, '-'), 'bridge-pointer.json'), {}).environmentId || null;
+
   // ---- launchd -----------------------------------------------------------------------------------
   const helperEnv = () => `<key>EnvironmentVariables</key><dict><key>ELECTRON_RUN_AS_NODE</key><string>1</string><key>CLAUDE_PROFILES_DIR</key><string>${xml(configDir)}</string>${process.env.CLAUDE_PROFILES_LABEL_PREFIX ? `<key>CLAUDE_PROFILES_LABEL_PREFIX</key><string>${xml(prefix())}</string>` : ''}</dict>`;
   function plist(label, args, extra) {
@@ -108,16 +114,24 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   async function loaded(label) {
     try { await run('launchctl', ['print', `${gui}/${label}`]); return true; } catch { return false; }
   }
+  // bootout returns before launchd has finished unloading the job; bootstrapping it again before then
+  // fails with "5: Input/output error".
+  async function unload(label) {
+    if (!(await loaded(label))) return;
+    await run('launchctl', ['bootout', `${gui}/${label}`]).catch(() => {});
+    const deadline = Date.now() + (SHUTDOWN_GRACE_S + 15) * 1000;
+    while (Date.now() < deadline && await loaded(label)) await new Promise((r) => setTimeout(r, 250));
+  }
   async function bootstrap(label, content) {
     fs.mkdirSync(AGENTS, { recursive: true });
     fs.mkdirSync(logsDir, { recursive: true });
     const file = path.join(AGENTS, `${label}.plist`);
     fs.writeFileSync(file, content);
-    if (await loaded(label)) await run('launchctl', ['bootout', `${gui}/${label}`]).catch(() => {});
+    await unload(label);
     await run('launchctl', ['bootstrap', gui, file]);
   }
   async function bootout(label) {
-    if (await loaded(label)) await run('launchctl', ['bootout', `${gui}/${label}`]).catch(() => {});
+    await unload(label);
     const file = path.join(AGENTS, `${label}.plist`);
     // Park the plist rather than delete it, so launchd does not start the job again at login.
     if (fs.existsSync(file)) {
@@ -133,12 +147,19 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     const cc = claudeConfig(s.configDir, s.folder);
     if (!cc.trusted) throw new Error(`${s.folder} is not trusted for ${s.configDir}. Run once in Terminal: cd "${s.folder}" && CLAUDE_CONFIG_DIR="${s.configDir}" claude remote-control, answer y, then Ctrl+C.`);
     if (!cc.remoteAccepted) throw new Error(`Remote Control has not been accepted for ${s.configDir}. Run claude remote-control once in Terminal with that CLAUDE_CONFIG_DIR.`);
-    await bootstrap(serverLabel(key), plist(serverLabel(key), ['serve', key], '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer>'));
+    await bootstrap(serverLabel(key), plist(serverLabel(key), ['serve', key], `<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer><key>ExitTimeOut</key><integer>${SHUTDOWN_GRACE_S + 15}</integer>`));
     log(`started server ${key}`);
   }
+  // Returns once the server has exited. A restart must not start the next server before then: while the
+  // old process is alive, the new one registers a fresh environment, and every session of the old one is
+  // stranded on claude.ai ("can't reach this computer"). Once it has exited, the new server takes the old
+  // environment back over and its sessions reconnect.
   async function stopServer(key) {
     await bootout(serverLabel(key));
-    log(`stopped server ${key}`);
+    const deadline = Date.now() + (SHUTDOWN_GRACE_S + 15) * 1000;
+    let running = true;
+    while (Date.now() < deadline && (running = (await snapshot()).servers.some((s) => s.prefix === key))) await new Promise((r) => setTimeout(r, 500));
+    log(running ? `stopped server ${key}, but it had not exited after ${SHUTDOWN_GRACE_S + 15}s` : `stopped server ${key}`);
   }
   async function setCleanup(enabled) {
     saveSettings({ cleanupEnabled: !!enabled });
@@ -165,25 +186,152 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   }
   async function serve(key) {
     const s = config().servers.find((x) => x.key === key);
-    if (!s || s.problem) { console.error(`serve ${key}: ${s ? s.problem : 'not in profiles.json'}`); process.exit(78); }
+    const args = [...(s?.args || [])];
+    if (!args.includes('--remote-control-session-name-prefix')) args.push('--remote-control-session-name-prefix', key);
+    await runClaude(`serve ${key}`, s, ['remote-control', ...args]);
+  }
+  // A stranded session carried on: the interactive CLI resumes its transcript with Remote Control on,
+  // which claude.ai shows as a new session holding the whole conversation.
+  async function continueRun(key, transcript, title) {
+    await runClaude(`continue ${transcript}`, config().servers.find((x) => x.key === key), ['--resume', transcript, '--remote-control', title || 'Continued session']);
+  }
+  async function runClaude(what, s, argv) {
+    if (!s || s.problem) { console.error(`${what}: ${s ? s.problem : 'not in profiles.json'}`); process.exit(78); }
     const PATH = await loginPath();
     const claude = which('claude', PATH);
-    if (!claude) { console.error(`serve ${key}: claude not found on PATH`); process.exit(78); }
+    if (!claude) { console.error(`${what}: claude not found on PATH`); process.exit(78); }
     const env = { ...process.env, PATH, CLAUDE_CONFIG_DIR: s.configDir };
     for (const k of ['ELECTRON_RUN_AS_NODE', 'CLAUDE_PROFILES_DIR', 'CLAUDE_PROFILES_LABEL_PREFIX']) delete env[k];
-    const args = [...s.args];
-    if (!args.includes('--remote-control-session-name-prefix')) args.push('--remote-control-session-name-prefix', key);
-    // remote-control draws a terminal UI and wants a TTY: script(1) provides a pty. Its stdin must be a
+    // Markers a Claude Code session sets for its children. Inherited (the app started from inside a
+    // session), they make claude stop saving its transcript and recording the claude.ai session it opens.
+    for (const k of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT']) delete env[k];
+    // claude draws a terminal UI and wants a TTY: script(1) provides a pty. Its stdin must be a
     // real pipe that never closes; Node's own 'pipe' stdio is a socket, which script rejects, so the
     // shell's `tail -f` supplies one.
-    const child = spawn('/bin/sh', ['-c', 'tail -f /dev/null | exec /usr/bin/script -q /dev/null "$@"', 'sh', claude, 'remote-control', ...args],
+    const child = spawn('/bin/sh', ['-c', 'tail -f /dev/null | exec /usr/bin/script -q /dev/null "$@"', 'sh', claude, ...argv],
       { cwd: s.folder, env, stdio: ['ignore', 'ignore', 'inherit'] });
-    // launchd makes this job its own process group; take the whole group (sh, tail, script, claude) down together.
+    // Stop only the claude process and let it shut down the way Ctrl+C does: a server gives its sessions
+    // time to finish and keeps its environment, so the next server reconnects them. Signalling the whole
+    // group instead would end every session underneath it at once. launchd (or the app's detached spawn)
+    // makes this its own process group; whatever is left of it (sh, tail, script) goes once claude exits.
     let stopping = false;
-    const stop = () => { if (stopping) return; stopping = true; try { process.kill(0, 'SIGTERM'); } catch { /* gone */ } process.exit(0); };
+    const killGroup = (sig) => { try { process.kill(0, sig); } catch { /* gone */ } };
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
+      const server = descendants(child.pid).find(isClaude);
+      if (!server) { killGroup('SIGTERM'); process.exit(0); }
+      try { process.kill(server.pid, 'SIGTERM'); } catch { /* gone */ }
+      setTimeout(() => { killGroup('SIGKILL'); process.exit(1); }, SHUTDOWN_GRACE_S * 1000).unref();
+    };
     process.on('SIGTERM', stop);
     process.on('SIGINT', stop);
-    child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
+    // sh waits on tail, which never ends, so the shell outlives claude. Exit once only tail is left, so
+    // launchd sees a server that died on its own and starts it again.
+    const done = (code) => { killGroup('SIGTERM'); process.exit(code); };
+    child.on('exit', (code, signal) => done(code ?? (signal ? 1 : 0)));
+    setInterval(() => { if (!descendants(child.pid).some((p) => !/^tail /.test(p.cmd))) done(stopping ? 0 : 1); }, 1000).unref();
+  }
+  // The processes under the shell that serve() started (sh -> tail, script -> claude -> sessions).
+  function descendants(root) {
+    let out;
+    try { out = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); } catch { return []; }
+    const procs = out.split('\n').map((l) => l.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean).map((m) => ({ pid: +m[1], ppid: +m[2], cmd: m[3] }));
+    const tree = new Set([root]);
+    for (let grew = true; grew;) { grew = false; for (const p of procs) if (tree.has(p.ppid) && !tree.has(p.pid)) { tree.add(p.pid); grew = true; } }
+    return procs.filter((p) => p.pid !== root && tree.has(p.pid));
+  }
+  const isClaude = (p) => path.basename(p.cmd.split(' ')[0]) === 'claude';
+
+  // ---- continuing a stranded session ----------------------------------------------------------
+  // A server that restarted before its predecessor had exited registered a new environment, and the old
+  // one's sessions show "can't reach this computer" for good: claude.ai refuses a second remote-control
+  // for the folder, so they cannot be reattached. Their transcripts are on disk, though, and the
+  // interactive CLI can resume one with Remote Control on, beside the folder's server.
+  const slug = (folder) => folder.replace(/[^A-Za-z0-9]/g, '-');
+  // The CLI names a Remote Control session's transcript with a v5 UUID of its session URL.
+  function transcriptOf(cse) {
+    const ns = Buffer.from('3ab19d7e9f3545c2926e75e271cc60b3', 'hex');
+    const h = require('node:crypto').createHash('sha1').update(ns).update(`https://api.anthropic.com/v1/code/sessions/${cse}`).digest();
+    h[6] = (h[6] & 15) | 80; h[8] = (h[8] & 63) | 128;
+    const x = h.subarray(0, 16).toString('hex');
+    return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+  }
+  const cseOf = (id) => String(id).replace(/^session_/, 'cse_');
+  // Continuations by stranded session ID and by the ID of the session that carries it on.
+  const continued = () => readJson(continuedFile, {});
+  function saveContinued(map) { fs.mkdirSync(stateDir, { recursive: true }); fs.writeFileSync(continuedFile, JSON.stringify(map, null, 2)); }
+  function continuationRunning(transcript) {
+    try { return execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\n').some((c) => isClaude({ cmd: c }) && c.includes(`--resume ${transcript} `)); } catch { return false; }
+  }
+
+  // `session` is claude.ai's record of the session being viewed. Returns { sessionId } to show instead,
+  // or { skipped } with the reason it was left alone. Waits up to a minute for a new continuation.
+  async function continueSession(profileIds, session) {
+    const id = cseOf(session.id);
+    const skip = (reason) => ({ skipped: reason });
+    if (session.environment_kind !== 'bridge') return skip('not a Remote Control session');
+    if (session.connection_status === 'connected') return skip('connected');
+    const map = continued();
+    // Opened the stranded original again: show its continuation while that is still running.
+    if (map[id]?.sessionId && map[id].sessionId !== id && continuationRunning(map[id].transcript)) return { sessionId: map[id].sessionId };
+    const servers = config().servers.filter((s) => profileIds.includes(s.profileId) && !s.problem);
+    if (!servers.length) return skip('this profile has no servers');
+    // Still in a running server's environment: that server serves it again on the next message.
+    if (session.environment_id && servers.some((s) => currentEnvironment(s) === session.environment_id)) return skip('its server is running');
+    // A continuation has no environment of its own; one that stopped is carried on from its transcript.
+    if (!session.environment_id && !map[id]) return skip('a terminal session, not one this app continued');
+    const transcript = map[id]?.transcript || transcriptOf(id);
+    if (continuationRunning(transcript)) return skip('already being continued');
+    // The transcript sits under whichever Claude config ran the session; resume it under this profile's.
+    const configDirs = [...new Set([...config().servers.map((s) => s.configDir), path.join(HOME, '.claude')])];
+    let found = null;
+    for (const s of servers) {
+      for (const dir of [s.configDir, ...configDirs]) {
+        const file = path.join(dir, 'projects', slug(s.folder), `${transcript}.jsonl`);
+        if (fs.existsSync(file)) { found = { s, file }; break; }
+      }
+      if (found) break;
+    }
+    if (!found) return skip('its transcript is not on this Mac');
+    const { s } = found;
+    const target = path.join(s.configDir, 'projects', slug(s.folder), `${transcript}.jsonl`);
+    if (found.file !== target && !fs.existsSync(target)) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(found.file, target);
+      const side = found.file.replace(/\.jsonl$/, '');
+      if (fs.existsSync(side)) fs.cpSync(side, target.replace(/\.jsonl$/, ''), { recursive: true, force: false });
+    }
+    // Detached, so it outlives the app the way the launchd servers do.
+    fs.mkdirSync(logsDir, { recursive: true });
+    const err = fs.openSync(path.join(logsDir, 'continued.err'), 'a');
+    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', CLAUDE_PROFILES_DIR: configDir };
+    if (labelPrefix) env.CLAUDE_PROFILES_LABEL_PREFIX = labelPrefix;
+    spawn(appBinary, [helperPath, 'continue', s.key, transcript, session.title || ''], { detached: true, env, stdio: ['ignore', 'ignore', err] }).unref();
+    fs.closeSync(err);
+    // The CLI records the claude.ai session it opened in <config>/sessions/<pid>.json.
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const sessionsDir = path.join(s.configDir, 'sessions');
+      let next = null;
+      try {
+        for (const f of fs.readdirSync(sessionsDir).filter((x) => x.endsWith('.json'))) {
+          const rec = readJson(path.join(sessionsDir, f), {});
+          if (rec.sessionId === transcript && rec.bridgeSessionId) { try { process.kill(rec.pid, 0); next = cseOf(rec.bridgeSessionId); } catch { /* stale record */ } }
+        }
+      } catch { /* no sessions folder yet */ }
+      if (next) {
+        const latest = continued();
+        latest[id] = { sessionId: next, transcript, key: s.key, at: new Date().toISOString() };
+        latest[next] = { sessionId: next, transcript, key: s.key, at: latest[id].at };
+        saveContinued(latest);
+        log(`continued session ${id} as ${next} under ${s.key}`);
+        return { sessionId: next };
+      }
+    }
+    log(`continuing session ${id} under ${s.key}: no claude.ai session after 60s, see continued.err`);
+    return skip('the continuation did not open a session in time');
   }
 
   // ---- process snapshot ------------------------------------------------------------------------
@@ -209,14 +357,18 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
       if ((base === 'claude' || base === 'claude.exe') && argv1 === 'remote-control') servers.push({ pid: p.pid, prefix: argOf(p.cmd, '--remote-control-session-name-prefix'), cmd: p.cmd });
     }
     const serverPids = new Set(servers.map((s) => s.pid));
+    const byTranscript = new Map(Object.values(continued()).map((c) => [c.transcript, c]));
     for (const p of procs.values()) {
       let kind = null;
       if (serverPids.has(p.ppid) && p.cmd.includes('--sdk-url')) kind = 'rc';
+      else if (isClaude(p) && / --remote-control( |$)/.test(p.cmd) && argOf(p.cmd, '--resume') && byTranscript.has(argOf(p.cmd, '--resume'))) kind = 'continued';
       else if (procs.get(p.ppid)?.cmd.includes('Claude.app/Contents/Helpers/disclaimer') && p.cmd.includes('--output-format stream-json')) kind = 'desktop';
       if (!kind) continue;
       const pids = tree(p.pid);
       sessions.push({
-        kind, pid: p.pid, serverPid: p.ppid, sessionId: argOf(p.cmd, '--session-id'), pids,
+        kind, pid: p.pid, serverPid: p.ppid, pids,
+        sessionId: kind === 'continued' ? byTranscript.get(argOf(p.cmd, '--resume')).sessionId : argOf(p.cmd, '--session-id'),
+        key: kind === 'continued' ? byTranscript.get(argOf(p.cmd, '--resume')).key : null,
         ownCpu: p.cpu, treeCpu: pids.reduce((a, x) => a + (procs.get(x)?.cpu || 0), 0), rss: pids.reduce((a, x) => a + (procs.get(x)?.rss || 0), 0),
       });
     }
@@ -258,7 +410,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
       const terminal = running.filter((r) => !configuredKeys.has(r.prefix) && r.cwd === s.folder && r.configDir === s.configDir);
       if (managed) claimed.add(managed.pid);
       terminal.forEach((t) => claimed.add(t.pid));
-      const sess = snap.sessions.filter((x) => x.kind === 'rc' && managed && x.serverPid === managed.pid);
+      const sess = snap.sessions.filter((x) => (x.kind === 'rc' && managed && x.serverPid === managed.pid) || (x.kind === 'continued' && x.key === s.key));
       servers.push({
         key: s.key, profileId: s.profileId, profileName: s.profileName, expectedAccount: s.expectedAccount, folder: s.folder, configDir: s.configDir,
         problem: s.problem || (!cc.trusted ? 'folder not trusted for this profile' : null),
@@ -285,7 +437,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
   }
   async function endSession(pid) {
-    const s = (await snapshot()).sessions.find((x) => x.pid === pid && x.kind === 'rc');
+    const s = (await snapshot()).sessions.find((x) => x.pid === pid && (x.kind === 'rc' || x.kind === 'continued'));
     if (!s) throw new Error(`pid ${pid} is not a Remote Control session`);
     killTree(s.pids);
     log(`ended session ${s.sessionId} pid=${pid} by hand, freed ${Math.round(s.rss / 1024)}MB`);
@@ -344,7 +496,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return { checked: sessions.length, ended };
   }
 
-  return { config, status, startServer, stopServer, setCleanup, serve, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig };
+  return { config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig };
 }
 
 module.exports = { createManager };

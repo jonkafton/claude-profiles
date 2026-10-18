@@ -1,7 +1,7 @@
 {
   "name": "claude-profiles",
   "productName": "Claude Profiles",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Unofficial macOS app for running several Claude accounts side by side, each in an isolated signed-in workspace, with Claude Code Remote Control servers managed for you.",
   "license": "MIT",
   "author": "jonkafton",

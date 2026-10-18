@@ -15,6 +15,7 @@ If you use more than one Claude account on one Mac (a work seat and a personal p
 
 - **The Claude desktop app is one account per Mac.** Only one copy runs at a time, and every Claude Code session it starts bills whichever account it is signed in to. Switching means signing out and back in.
 - **Remote Control sessions never go away.** Each Remote Control session is a process on your Mac that stays alive after its last turn, holding 150 to 500 MB plus its MCP servers. They pile up: dozens of sessions holding over 10 GB is easy to reach. Nothing lists them, clears the idle ones, or brings one back when you want it again.
+- **A restarted server strands its sessions.** Restart a Remote Control server too quickly and its open sessions show "can't reach this computer" for good. claude.ai offers no way to bring them back, and the CLI refuses to try while the folder has a server.
 - **Every account looks the same.** Several Claude windows mean identical icons in the Dock and in ⌘Tab, so switching to the right account is guesswork.
 - **Web apps don't fill the gap.** Safari web apps keep each login separate, but links from Claude either stay trapped inside the web app or are silently dropped instead of opening in your browser. Chrome merges every claude.ai install across all your Chrome profiles into one Dock app with a profile-switching menu, so you can't give each account its own app.
 - **Folders and accounts get crossed.** Nothing stops a project's Claude Code sessions from running under the wrong account.
@@ -32,6 +33,8 @@ Claude Profiles fixes all of these in one app.
 - **Claude Design profiles too.** Add profiles that open Claude Design (claude.ai/design) instead of Claude Code, with a palette icon in your colour, in the same sidebar and windows as everything else. A Design profile can share the sign-in of a Claude Code profile on the same account, so one sign-in covers both.
 - **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark (Code) or palette (Design) on that colour. Or use any image you like. The marks are original, not Anthropic's logos.
 - **Remote Control servers, managed for you.** Each profile's folders get a `claude remote-control` server that runs as a launchd job, so it keeps running when the app is closed and comes back after a restart. Start, stop and restart from the **Servers** screen.
+- **Restarts keep your sessions.** Restarting a server waits for the old one to exit, so its sessions reconnect. A server that dies is started again within a minute and keeps its sessions too.
+- **Stranded sessions come back when you open them.** Open a session no server can reach any more and the app carries it on as a new session with the whole conversation, then switches the view to it.
 - **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
 - **Links behave.** Links to anything outside Claude open in your default browser. Claude links stay in the profile. Right-click any link for **Open Link in Browser** or **Copy Link**.
@@ -141,13 +144,44 @@ Windows and their active profiles are restored when you reopen the app.
 
 The **Servers** screen lists every profile's folders and their Remote Control servers.
 
-- **Start / Stop / Restart** a server. Servers are launchd jobs, so they keep running when Claude Profiles is closed and start again after you log in. Stopping takes that server's sessions offline.
+- **Start / Stop / Restart** a server. Servers are launchd jobs, so they keep running when Claude Profiles is closed and start again after you log in. Stopping takes that server's sessions offline. A server is stopped the way Ctrl+C stops it, and the next one only starts once it has exited, so after a restart its sessions reconnect on their own. A server that dies is started again within a minute, and its sessions reconnect too.
 - **Sessions** are listed by title, with their last activity and how much memory they hold (including their MCP servers). Titles and last activity come from claude.ai using that profile's sign-in; this uses claude.ai's internal web API, so if it ever changes the screen falls back to session IDs. **End** stops a session and frees its memory. **Keep** protects a session from automatic cleanup.
 - **Also running from a Terminal window**: if you already run `claude remote-control` by hand in a profile's folder, it shows here. When its sessions are done, press **Stop it**, then **Start** to hand the folder over to the app.
 - **Other servers** lists Remote Control servers that match no profile, so you can stop strays.
 - **Automatic cleanup** is off until you switch it on. Once an hour it ends sessions that have been idle for `idleHours` (default 3), where idle means the session and everything it started used less than `idleCpuPerHour` CPU seconds per hour (default 30; an idle session uses about 10 to 20). A tool that finished since the last check counts as activity. **Preview** shows what it would end; **Run now** ends them immediately. Claude desktop app sessions are left alone unless you set `includeDesktop`.
 
 About ended sessions: Claude Code's documentation says a crashed Remote Control session is served again when you next message it, and cleanup ends sessions the way a crash would. This has not been reliably confirmed in testing, so treat **End** as closing the session. You can always continue one from Terminal with `claude --resume` in the folder, using that profile's `CLAUDE_CONFIG_DIR`.
+
+## Restarts and stranded sessions
+
+### The challenge
+
+Every time `claude remote-control` starts, it registers an *environment* with claude.ai for its folder, and every session it opens belongs to that environment. Stopped cleanly, a server keeps its environment and writes it to `bridge-pointer.json` in the Claude config's project folder. The next server takes the same environment back over and the sessions reconnect.
+
+That only works if the old server has fully exited first. A new server that starts while the previous one is still shutting down registers a fresh environment instead. Every session of the old environment then shows "can't reach this computer" on claude.ai, permanently:
+
+- **The server won't take them back.** It only serves its own environment.
+- **A second server for the folder is refused.** Reattaching a session with `claude remote-control --session-id <id>`, or reusing the old environment through the pointer, fails with a 409 ("This folder is already served by another Claude Code on this device") while the folder's newer environment exists, even with its server stopped.
+- **The conversation isn't lost, just unreachable.** It is still on disk as a transcript, but getting at it meant opening Terminal, finding the right Claude config and running `claude --resume`.
+
+A plain stop followed by a start, which is what a Restart button does, hits the race every time. The old server is still shutting down, giving its sessions up to 30 seconds to finish, when the new one starts.
+
+### How the app solves it
+
+**Stopping a server cleanly.** The helper that launchd runs signals only the `claude remote-control` process, the way Ctrl+C would, and waits for it to exit. The launchd job allows a minute for that (`ExitTimeOut`). Signalling the whole process group would end every session underneath at once.
+
+**Restarting in order.** **Restart** returns from the stop only once the server process has gone and launchd has finished unloading the job, and only then starts the next one. The new server finds the old environment free, takes it back over, and the sessions reconnect. A restart takes a second or two.
+
+**Restarting a server that died.** The helper exits as soon as `claude` does. Before, the shell kept the job looking alive, so launchd never restarted it. Now launchd starts it again within its 60-second throttle, on the same environment.
+
+**Continuing a session that is already stranded.** The interactive CLI is not bound by the one-server-per-folder rule: `claude --resume <transcript> --remote-control "<title>"` resumes a transcript with Remote Control on, beside the folder's server, and claude.ai shows it as a new session holding the whole conversation. So when a profile view opens a Remote Control session that is disconnected and whose environment no running server holds, the app does this:
+
+1. It reads the session's record from claude.ai with that profile's sign-in. Only Remote Control sessions are touched, and only ones this Mac can serve.
+2. It finds the transcript on disk. The CLI names a Remote Control session's transcript with a version 5 UUID of its session URL (`https://api.anthropic.com/v1/code/sessions/<id>`), so the file is found by name, not by guesswork. If it sits under another Claude config on this Mac, it is copied into the profile's own.
+3. It starts the resume as a detached process, so it outlives the app the way the servers do. It reads the new session's ID from the record the CLI keeps in `<config>/sessions/<pid>.json`.
+4. It switches the view to the new session and remembers the pair in `state/continued.json`. Opening the stranded original again goes straight to the continuation, and a continuation that has stopped (after a reboot, say) is continued again from the same transcript.
+
+A continued session is listed on the **Servers** screen with the profile's other sessions, and **End** and automatic cleanup treat it like any other. A stranded session whose transcript isn't on this Mac, for example one from another computer, is left alone.
 
 ## Configuration
 
@@ -180,7 +214,7 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 
 - **"Couldn't sign you in. This browser or app may not be secure."** That is Google's block on embedded browsers. Sign in [by email](#signing-in-by-email).
 - **"There was an error verifying your code."** You pasted the sign-in link into the code box. Open the link to get the code, or copy the link and press ⇧⌘V.
-- **"<folder> · <your Mac> is offline" in a session.** The session is pointed at a folder whose server is stopped, or at an old environment. Start the server on the Servers screen, or pick another environment under the message box.
+- **"<folder> · <your Mac> is offline" in a session.** The session is pointed at a folder whose server is stopped, or at an old environment. Start the server on the Servers screen, or pick another environment under the message box. Versions before 1.0.1 could start a restarted server before the old one had exited, which gave it a new environment and left the old sessions on one nothing serves. Open one in its profile and the app carries it on as a new session; see [Restarts and stranded sessions](#restarts-and-stranded-sessions).
 - **A server shows "Problem: folder not trusted for this profile".** Run step 5 of [Setting up a profile](#setting-up-a-profile) for that folder.
 - **"This profile expects A, but its Claude config is signed in as B".** Sessions would land in the wrong account. Run `/logout` in Claude Code with that config, then sign in again (step 4).
 - **A server stays on "Starting…".** Check its `.err` log. The usual cause is `claude` not being found: the app takes `PATH` from your login shell, so make sure `claude` works in a new Terminal window.

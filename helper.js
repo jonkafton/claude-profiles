@@ -1,5 +1,6 @@
 // Headless entry point that launchd runs, using the app's own binary as plain Node:
 //   ELECTRON_RUN_AS_NODE=1 "<Claude Profiles binary>" helper.js serve <key> | reap [--dry-run]
+// The app itself runs `continue <key> <transcript> <title>`, detached, to carry on a stranded session.
 'use strict';
 const { createManager } = require('./manager');
 const { DEFAULT_CONFIG_DIR } = require('./profiles');
@@ -10,9 +11,11 @@ const mgr = createManager({
   helperPath: __filename,
 });
 
-const [cmd, arg] = process.argv.slice(2);
+const [cmd, arg, ...rest] = process.argv.slice(2);
 if (cmd === 'serve' && arg) {
   mgr.serve(arg);
+} else if (cmd === 'continue' && arg && rest[0]) {
+  mgr.continueRun(arg, rest[0], rest[1]);
 } else if (cmd === 'reap') {
   mgr.reap({ dryRun: arg === '--dry-run' }).then((r) => { console.log(JSON.stringify(r, null, 2)); });
 } else {
