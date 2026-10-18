@@ -477,8 +477,9 @@ ipcMain.handle('editor', async (event, action, ...args) => {
     },
     save: (input) => {
       const saved = P.upsertProfile(CONFIG_DIR, { ...input, icon: input.removeIcon ? '' : undefined });
-      if (input.iconSource) {
-        const img = nativeImage.createFromPath(input.iconSource);
+      if (input.iconSource || input.iconDataUrl) {
+        if (input.iconDataUrl && !/^data:image\/png;base64,/.test(input.iconDataUrl)) throw new Error('Unexpected icon data.');
+        const img = input.iconSource ? nativeImage.createFromPath(input.iconSource) : nativeImage.createFromDataURL(input.iconDataUrl);
         if (img.isEmpty()) throw new Error('That file could not be read as an image.');
         fs.mkdirSync(path.join(CONFIG_DIR, 'icons'), { recursive: true });
         fs.writeFileSync(path.join(CONFIG_DIR, 'icons', `${saved.id}.png`), img.resize({ width: 256, height: 256 }).toPNG());

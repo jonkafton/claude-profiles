@@ -48,6 +48,10 @@
   ol.steps > li.done::before { content: "✓"; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
   ol.steps > li.bad::before { content: "!"; background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
   .state { font-size: 12px; } .state.ok { color: var(--ok); } .state.bad { color: var(--bad); } .state.warn { color: var(--warn); }
+  .swatches { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .swatch { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; padding: 0; }
+  .swatch:hover, .swatch:focus-visible { border-color: var(--ink); }
+  input[type=color] { width: 30px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
   .callout { background: color-mix(in srgb, var(--accent) 9%, var(--card)); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: 12.5px; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 12px; max-width: 80%; display: none; }
 </style>
@@ -81,6 +85,28 @@
   const tilde = (p) => (home && p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
   const avatar = (icon, name) => icon ? h('img', { class: 'avatar', src: icon, alt: '' }) : h('div', { class: 'avatar' }, (name || '?')[0].toUpperCase());
 
+  // ---- generated icons: an original white spark on a colour of your choice ----
+  // Deliberately not Anthropic's logo: this app is unofficial and must not look like an official product.
+  const SWATCHES = ['#c96442', '#d8bc9c', '#0b3fb3', '#1f1e1d', '#2f7d4f', '#7a4fd1', '#c8433a', '#1f8fa3'];
+  function sparkSvg(bg) {
+    const rays = [];
+    for (let i = 0; i < 11; i++) {
+      const a = (i * 360) / 11 - 90 + (i % 2 ? 4 : 0);
+      const len = i % 3 === 0 ? 92 : i % 3 === 1 ? 78 : 84;
+      const rad = (a * Math.PI) / 180;
+      rays.push(`<line x1="128" y1="128" x2="${(128 + Math.cos(rad) * len).toFixed(1)}" y2="${(128 + Math.sin(rad) * len).toFixed(1)}"/>`);
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="${bg}"/><g stroke="#fff" stroke-width="21" stroke-linecap="round">${rays.join('')}</g><circle cx="128" cy="128" r="22" fill="#fff"/></svg>`;
+  }
+  async function sparkPng(bg) {
+    const img = new Image();
+    img.src = 'data:image/svg+xml;base64,' + btoa(sparkSvg(bg));
+    await img.decode();
+    const canvas = Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
+    canvas.getContext('2d').drawImage(img, 0, 0, 256, 256);
+    return canvas.toDataURL('image/png');
+  }
+
   // ---- the add/edit form ----
   let draft = null; // { id?, name, account, folders[], configDir, url, icon (preview), iconSource, removeIcon }
   function openForm(p) {
@@ -95,6 +121,7 @@
     if (!draft) { $('form').replaceChildren(); return; }
     const d = draft;
     const sync = () => { d.name = $('f-name').value; d.account = $('f-account').value; d.configDir = $('f-config').value; d.url = $('f-url').value; };
+    const useColour = async (c) => { sync(); d.colour = c; d.iconDataUrl = await sparkPng(c); d.icon = d.iconDataUrl; d.iconSource = null; d.removeIcon = false; renderForm(); };
     $('form').replaceChildren(h('div', { class: 'card' },
       h('h2', {}, d.id ? `Edit ${d.name}` : 'New profile'),
       h('label', { for: 'f-name' }, 'Name'),
@@ -104,9 +131,14 @@
       h('div', { class: 'hint' }, 'The email of the Claude subscription this profile signs in with, on the web and in Claude Code.'),
       h('label', {}, 'Icon'),
       h('div', { class: 'row' }, avatar(d.icon, d.name),
-        h('button', { onclick: async () => { sync(); try { const r = await window.editor.chooseIcon(); if (r) { d.icon = r.preview; d.iconSource = r.source; d.removeIcon = false; renderForm(); } } catch (e) { renderForm(errText(e)); } } }, 'Choose image…'),
-        d.icon ? h('button', { onclick: () => { sync(); d.icon = null; d.iconSource = null; d.removeIcon = true; renderForm(); } }, 'Remove') : null,
-        h('span', { class: 'hint' }, 'Shown in the sidebar, and as the app icon in the Dock and ⌘Tab while this profile is active.')),
+        h('button', { onclick: async () => { sync(); try { const r = await window.editor.chooseIcon(); if (r) { d.icon = r.preview; d.iconSource = r.source; d.iconDataUrl = null; d.removeIcon = false; renderForm(); } } catch (e) { renderForm(errText(e)); } } }, 'Choose image…'),
+        d.icon ? h('button', { onclick: () => { sync(); d.icon = null; d.iconSource = null; d.iconDataUrl = null; d.removeIcon = true; renderForm(); } }, 'Remove') : null),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        h('span', { class: 'hint', style: 'margin:0' }, 'Or pick a colour:'),
+        h('div', { class: 'swatches' },
+          SWATCHES.map((c) => h('button', { class: 'swatch', title: c, style: `background:${c}`, onclick: () => useColour(c) })),
+          h('input', { type: 'color', title: 'Any colour', value: d.colour || '#c96442', oninput: (e) => useColour(e.target.value) }))),
+      h('div', { class: 'hint' }, 'Shown in the sidebar, and as the app icon in the Dock and ⌘Tab while this profile is active.'),
       h('label', {}, 'Working folders'),
       h('div', { class: 'hint' }, 'Folders on this Mac where this account’s Claude Code sessions run. Each folder gets its own Remote Control server.'),
       d.folders.length ? h('div', { class: 'folders' }, d.folders.map((f, i) => h('div', { class: 'row' },
@@ -125,7 +157,8 @@
         h('button', { class: 'primary', onclick: async () => {
           sync();
           try {
-            const id = await window.editor.save({ id: d.id, name: d.name, account: d.account, folders: d.folders, configDir: d.configDir, url: d.url, iconSource: d.iconSource, removeIcon: d.removeIcon });
+            if (!d.id && !d.icon && !d.iconSource) d.iconDataUrl = await sparkPng(SWATCHES[document.querySelectorAll('#list .card[id]').length % SWATCHES.length]);
+            const id = await window.editor.save({ id: d.id, name: d.name, account: d.account, folders: d.folders, configDir: d.configDir, url: d.url, iconSource: d.iconSource, iconDataUrl: d.iconDataUrl, removeIcon: d.removeIcon });
             const isNew = !d.id;
             closeForm();
             await refresh(id);

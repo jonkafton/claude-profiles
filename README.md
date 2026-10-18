@@ -26,6 +26,7 @@ Claude Profiles fixes all of these in one app.
 - **Isolated sign-in per profile.** Each profile has its own cookies, storage and cache, so each stays signed in to its own account with no crossover.
 - **A sidebar of your accounts**, with your own icons. Click one or press ⌘1 to ⌘9.
 - **Create profiles in the app.** Give a profile a name, the email of its Claude subscription, an icon, and the working folders on your Mac its Claude Code sessions use. A setup checklist on each profile tells you what is done and what is left.
+- **No icon design needed.** Pick a colour from a preset or the macOS colour wheel and the app makes an icon: a white spark on that colour. Or use any image you like.
 - **Remote Control servers, managed for you.** Each profile's folders get a `claude remote-control` server that runs as a launchd job, so it keeps running when the app is closed and comes back after a restart. Start, stop and restart from the **Servers** screen.
 - **See and clear sessions.** Every open session is listed with its idle time and memory, with **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
@@ -58,7 +59,7 @@ When the app opens for the first time it shows the **Profiles** screen with a ne
 1. **Fill in the profile.**
    - **Name**: what the sidebar shows, for example "Work".
    - **Claude account email**: the email of the Claude subscription this profile uses, on the web and in Claude Code.
-   - **Icon** (optional): any image. It is used in the sidebar and as the app icon while the profile is active.
+   - **Icon**: pick a colour (a preset swatch, or any colour from the colour wheel) to get a white spark on that colour, or choose any image. It is used in the sidebar and as the app icon while the profile is active. A new profile without one gets a coloured spark automatically.
    - **Working folders**: choose the project folders on your Mac that this account's Claude Code sessions work in. Each folder gets its own Remote Control server.
    - **Advanced**: the **Claude Code config folder** (`CLAUDE_CONFIG_DIR`) holds this account's Claude Code login and settings. Leave it empty to get a new, separate one at `~/.claude-<profile-id>`, or choose an existing folder, such as `~/.claude`, to reuse a login you already have. You can also change the start page (default `https://claude.ai/code`).
 2. **Press Create profile.** The profile now shows a setup checklist. Each step ticks itself off when it is done.
