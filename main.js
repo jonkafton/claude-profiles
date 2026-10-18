@@ -526,8 +526,42 @@ ipcMain.handle('mgr', async (event, action, ...args) => {
   if (!actions[action]) throw new Error(`unknown action ${action}`);
   const result = await actions[action](...args);
   if (action !== 'status' && action !== 'packaged') setTimeout(pushStatus, 1500);
+  if (action === 'start' || action === 'restart') setTimeout(retireStaleEnvironments, 60000);
   return result;
 });
+
+// claude.ai's new-session picker shows one entry per folder and can pick an environment no server serves
+// any more, so the folder looks offline while its server is running. Each server start used to leave one
+// behind. Once a folder's server is online, archive this Mac's other environments for that folder.
+// Archiving hides only the environment: its sessions stay listed, and opening one continues it.
+async function retireStaleEnvironments() {
+  let st;
+  try { st = await mgr.status(); } catch { return; }
+  const machine = require('node:os').hostname().replace(/\.local$/, '');
+  const headers = { 'anthropic-version': '2023-06-01', 'anthropic-client-platform': 'web_claude_ai' };
+  for (const p of config.profiles.filter((x) => !x.shareSignIn)) {
+    const folders = new Set(st.servers.filter((s) => s.profileId === p.id && s.pid).map((s) => s.folder));
+    if (!folders.size) continue;
+    const ses = session.fromPartition(`persist:profile-${p.id}`);
+    try {
+      const orgs = await (await ses.fetch('https://claude.ai/api/organizations', { credentials: 'include' })).json();
+      for (const org of Array.isArray(orgs) ? orgs : []) {
+        const base = `https://claude.ai/v1/environment_providers/private/organizations/${org.uuid}/environments`;
+        const r = await ses.fetch(`${base}?limit=1000`, { credentials: 'include', headers });
+        if (!r.ok) continue;
+        const ours = ((await r.json()).environments || []).filter((e) => e.kind === 'bridge' && e.state === 'active' && e.bridge_info?.machine_name === machine);
+        for (const folder of folders) {
+          const here = ours.filter((e) => e.bridge_info.directory === folder);
+          if (!here.some((e) => e.bridge_info.online)) continue;
+          for (const e of here.filter((x) => !x.bridge_info.online)) {
+            const a = await ses.fetch(`${base}/${e.environment_id}/archive`, { method: 'POST', credentials: 'include', headers });
+            mgr.log(`${a.ok ? 'archived' : `could not archive (${a.status})`} stale environment ${e.environment_id} for ${folder} in ${p.name}`);
+          }
+        }
+      }
+    } catch (e) { mgr.log(`retiring stale environments in ${p.name}: ${e.message}`); }
+  }
+}
 
 // ---- Profiles screen -------------------------------------------------------------------------------
 
@@ -666,6 +700,8 @@ if (!app.requestSingleInstanceLock()) {
     else createWindow();
     pushStatus();
     setInterval(pushStatus, 30000);
+    setTimeout(retireStaleEnvironments, 60000);
+    setInterval(retireStaleEnvironments, 30 * 60000);
   });
   // Clicking the Dock icon with every window closed opens a fresh one.
   app.on('activate', () => { if (!windows.size) createWindow(); });

@@ -496,7 +496,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return { checked: sessions.length, ended };
   }
 
-  return { config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig };
+  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig };
 }
 
 module.exports = { createManager };

@@ -181,6 +181,8 @@ A plain stop followed by a start, which is what a Restart button does, hits the 
 3. It starts the resume as a detached process, so it outlives the app the way the servers do. It reads the new session's ID from the record the CLI keeps in `<config>/sessions/<pid>.json`.
 4. It switches the view to the new session and remembers the pair in `state/continued.json`. Opening the stranded original again goes straight to the continuation, and a continuation that has stopped (after a reboot, say) is continued again from the same transcript.
 
+**Retiring dead environments.** Every environment a server ever registered stays on claude.ai, all with the same name. The new-session picker shows one entry per folder and can pick a dead one, so the folder reads "offline" while its server is running. Once a folder's server is online, the app archives this Mac's other environments for that folder (a minute after it starts, after **Start** and **Restart**, and every half hour). Archiving removes only the environment from the picker: its sessions stay listed on claude.ai, and opening one continues it as above.
+
 A continued session is listed on the **Servers** screen with the profile's other sessions, and **End** and automatic cleanup treat it like any other. A stranded session whose transcript isn't on this Mac, for example one from another computer, is left alone.
 
 ## Configuration

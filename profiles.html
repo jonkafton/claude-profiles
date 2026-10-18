@@ -131,16 +131,20 @@
   let profilesList = [];
   // { id?, kind, name, account, shareSignIn, folders[], configDir, url, icon (preview), colour?, iconSource, iconDataUrl, removeIcon }
   let draft = null;
+  // Editing a profile turns its card into the form; a new profile's form sits above the list.
   function openForm(p, kind) {
     draft = p ? { id: p.id, kind: p.kind, name: p.name, account: p.account, shareSignIn: p.shareSignIn || '', folders: p.folders.map((f) => f.folder), configDir: p.configDir, url: p.url, icon: p.icon }
               : { kind: kind || 'code', name: '', account: '', shareSignIn: '', folders: [], configDir: '', url: '', icon: null };
+    $('form').replaceChildren();
+    renderList();
     renderForm();
-    $('form').scrollIntoView({ behavior: 'smooth' });
+    formCard()?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTimeout(() => $('f-name')?.focus(), 50);
   }
-  function closeForm() { draft = null; renderForm(); }
+  function closeForm() { draft = null; $('form').replaceChildren(); renderList(); }
+  const formCard = () => document.querySelector('[data-form]');
   function renderForm(error) {
-    if (!draft) { $('form').replaceChildren(); return; }
+    if (!draft) return;
     const d = draft;
     const isCode = d.kind === 'code';
     const sync = () => {
@@ -151,7 +155,7 @@
     const setKind = async (k) => { sync(); if (d.url === (d.kind === 'design' ? 'https://claude.ai/design' : 'https://claude.ai/code')) d.url = ''; d.kind = k; if (d.colour && d.iconDataUrl) { d.iconDataUrl = await markPng(k, d.colour); d.icon = d.iconDataUrl; } renderForm(); };
     // Only profiles with their own sign-in can be shared, and never the profile itself.
     const shareable = profilesList.filter((p) => !p.shareSignIn && p.id !== d.id);
-    $('form').replaceChildren(h('div', { class: 'card' },
+    const el = h('div', { class: 'card', 'data-form': true, id: d.id ? `p-${d.id}` : null, style: 'border-color: var(--accent)' },
       h('h2', {}, d.id ? `Edit ${d.name}` : 'New profile'),
       h('label', {}, 'Type'),
       h('div', { class: 'kinds' },
@@ -216,8 +220,10 @@
         h('button', { onclick: closeForm }, 'Cancel'),
         d.id ? h('button', { class: 'danger', style: 'margin-left:auto', onclick: async () => {
           if (!confirm(`Delete the profile “${d.name}”? ${isCode ? 'Its servers are stopped. ' : ''}Its sign-in data stays on this Mac, so re-adding a profile with the same name signs straight back in.`)) return;
-          try { await window.editor.remove(d.id); closeForm(); refresh(); toast('Profile deleted.'); } catch (e) { renderForm(errText(e)); }
-        } }, 'Delete profile') : null)));
+          try { await window.editor.remove(d.id); draft = null; await refresh(); toast('Profile deleted.'); } catch (e) { renderForm(errText(e)); }
+        } }, 'Delete profile') : null));
+    if (!d.id) $('form').replaceChildren(el);
+    else (formCard() || $(`p-${d.id}`))?.replaceWith(el);
   }
 
   // ---- the list, with each profile's setup checklist ----
@@ -270,10 +276,14 @@
       home = hm;
       profilesList = profiles;
       customMarks = marks || {};
-      $('list').replaceChildren(...(profiles.length ? profiles.map((p) => card(p, p.id === highlight))
-        : [h('div', { class: 'card' }, h('h2', {}, 'No profiles yet'), h('div', { class: 'sub', style: 'margin-top:4px' }, 'Add one for each Claude account you use.'))]));
+      renderList(highlight);
+      if (draft) renderForm();
       if (highlight) document.getElementById(`p-${highlight}`)?.scrollIntoView({ behavior: 'smooth' });
     } catch (e) { toast(errText(e)); }
+  }
+  function renderList(highlight) {
+    $('list').replaceChildren(...(profilesList.length ? profilesList.map((p) => card(p, p.id === highlight))
+      : [h('div', { class: 'card' }, h('h2', {}, 'No profiles yet'), h('div', { class: 'sub', style: 'margin-top:4px' }, 'Add one for each Claude account you use.'))]));
   }
   $('add').addEventListener('click', () => openForm(null, 'code'));
   $('add-design').addEventListener('click', () => openForm(null, 'design'));
