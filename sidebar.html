@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<title>Claude Profiles</title>
+<style>
+  :root { --bg: #ebe9e1; --ink: #3d3929; --muted: #8a8573; --ring: #c96442; --hover: rgba(0, 0, 0, 0.06); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1f1e1b; --ink: #e8e6dc; --muted: #8f8b7e; --ring: #d97757; --hover: rgba(255, 255, 255, 0.07); }
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 500 10.5px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; user-select: none; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  /* The top strip clears the traffic lights and drags the window. */
+  .drag { height: 44px; flex: none; -webkit-app-region: drag; }
+  nav { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 6px 0; overflow-y: auto; }
+  .bottom { flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0 10px; }
+  button { all: unset; box-sizing: border-box; width: 64px; padding: 6px 0 5px; border-radius: 10px; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 5px; position: relative; }
+  button:hover { background: var(--hover); }
+  button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .icon { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; display: grid; place-items: center;
+    background: var(--hover); font-size: 16px; font-weight: 600; box-shadow: 0 0 0 2px transparent; transition: box-shadow 0.12s; }
+  .tool .icon { width: 30px; height: 30px; font-size: 15px; color: var(--muted); background: none; }
+  button[aria-current="true"] .icon { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ring); }
+  .name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  button[aria-current="true"] .name { color: var(--ink); }
+  /* Server state on each icon: green = running from this app, amber = only a Terminal-started server, red = a problem. */
+  .dot { position: absolute; top: 3px; right: 8px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg); display: none; }
+  .dot.running { display: block; background: #3f9b62; }
+  .dot.terminal { display: block; background: #d39a2c; }
+  .dot.problem { display: block; background: #c8433a; }
+  .count { position: absolute; top: 34px; right: 6px; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--ink); color: var(--bg);
+    font-size: 9.5px; line-height: 15px; text-align: center; display: none; }
+  .count.show { display: block; }
+</style>
+</head>
+<body>
+<div class="drag"></div>
+<nav id="nav" aria-label="Profiles"></nav>
+<div class="bottom">
+  <button class="tool" data-id="new" title="Add profile"><span class="icon" aria-hidden="true">＋</span><span class="name">Add</span></button>
+  <button class="tool" data-id="__profiles" title="Profiles (⌘,)"><span class="icon" aria-hidden="true">☰</span><span class="name">Profiles</span></button>
+  <button class="tool" data-id="__servers" title="Servers (⇧⌘S)"><span class="icon" aria-hidden="true">⚙︎</span><span class="name">Servers</span></button>
+</div>
+<script>
+  const nav = document.getElementById('nav');
+  const tools = [...document.querySelectorAll('.tool')];
+  let activeId = null;
+  let status = {};
+  const mark = () => {
+    for (const b of [...nav.children, ...tools]) b.setAttribute('aria-current', String(b.dataset.id === activeId));
+    for (const b of nav.children) {
+      const s = status[b.dataset.id];
+      const dot = b.querySelector('.dot');
+      const count = b.querySelector('.count');
+      dot.className = `dot ${s ? (s.problem ? 'problem' : s.state) : ''}`;
+      dot.title = !s ? '' : s.problem ? 'Server problem: open Servers' : s.state === 'running' ? 'Server running' : s.state === 'terminal' ? 'Server running from a Terminal window' : 'Server stopped';
+      count.textContent = s && s.sessions ? String(s.sessions) : '';
+      count.className = `count${s && s.sessions ? ' show' : ''}`;
+    }
+  };
+  async function render() {
+    const list = await window.profiles.list();
+    nav.replaceChildren(...list.map((p, i) => {
+      const b = document.createElement('button');
+      b.dataset.id = p.id;
+      b.title = `${p.name}${p.account ? ` · ${p.account}` : ''}${i < 9 ? `  (⌘${i + 1})` : ''}`;
+      const icon = p.icon ? Object.assign(document.createElement('img'), { src: p.icon, alt: '' })
+                          : Object.assign(document.createElement('span'), { textContent: p.name[0] });
+      icon.className = 'icon';
+      b.append(icon, Object.assign(document.createElement('span'), { className: 'name', textContent: p.name }),
+        Object.assign(document.createElement('span'), { className: 'dot' }), Object.assign(document.createElement('span'), { className: 'count' }));
+      b.addEventListener('click', () => window.profiles.select(p.id));
+      return b;
+    }));
+    mark();
+  }
+  window.profiles.onActive((id) => { activeId = id; mark(); });
+  window.profiles.onStatus((s) => { status = s || {}; mark(); });
+  window.profiles.onChanged(render);
+  for (const b of tools) b.addEventListener('click', () => window.profiles.select(b.dataset.id));
+  render();
+</script>
+</body>
+</html>

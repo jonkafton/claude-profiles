@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/icon.iconset/
+build/icon.svg.png
+
+# Personal data must never be committed. The app keeps it in
+# ~/Library/Application Support/Claude Profiles, but older versions used the source folder.
+profiles.json
+icons/
+state/
+logs/
+
+.DS_Store
+*.log

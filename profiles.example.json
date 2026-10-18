@@ -1,0 +1,33 @@
+{
+  "comment": "Example only. The app keeps the real file in ~/Library/Application Support/Claude Profiles/profiles.json and writes it from the Profiles screen.",
+  "dockIconFollowsProfile": true,
+  "cleanup": { "idleHours": 3, "idleCpuPerHour": 30, "includeDesktop": false },
+  "pairings": [
+    { "folderContains": "client-acme", "configDir": "~/.claude-acme" }
+  ],
+  "profiles": [
+    {
+      "id": "personal",
+      "name": "Personal",
+      "account": "alice@example.com",
+      "icon": "icons/personal.png",
+      "url": "https://claude.ai/code",
+      "configDir": "~/.claude-personal",
+      "servers": [
+        { "id": "side-project", "folder": "~/code/side-project" }
+      ]
+    },
+    {
+      "id": "acme",
+      "name": "Acme",
+      "account": "alice@acme.example",
+      "icon": "icons/acme.png",
+      "url": "https://claude.ai/code",
+      "configDir": "~/.claude-acme",
+      "servers": [
+        { "id": "client-acme-web", "folder": "~/code/client-acme-web", "args": ["--capacity", "50"] },
+        { "id": "client-acme-api", "folder": "~/code/client-acme-api" }
+      ]
+    }
+  ]
+}

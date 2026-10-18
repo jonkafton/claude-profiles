@@ -1,0 +1,20 @@
+{
+  "name": "claude-profiles",
+  "productName": "Claude Profiles",
+  "version": "1.0.0",
+  "description": "Unofficial macOS app for running several Claude accounts side by side, each in an isolated signed-in workspace, with Claude Code Remote Control servers managed for you.",
+  "license": "MIT",
+  "author": "jonkafton",
+  "repository": { "type": "git", "url": "https://github.com/jonkafton/claude-profiles.git" },
+  "keywords": ["claude", "claude-code", "electron", "macos", "remote-control", "launchd", "multi-account"],
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "package": "node build.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "43.7.7"
+  }
+}

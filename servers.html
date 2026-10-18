@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Servers</title>
+<style>
+  :root { --bg: #f5f4ef; --card: #fffefb; --ink: #2f2c24; --muted: #7d786a; --line: #e4e1d6; --accent: #c96442;
+    --ok: #2f7d4f; --warn: #a86a12; --bad: #b3322b; --chip: #efede6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #262522; --card: #2e2d2a; --ink: #ece9df; --muted: #9a9587; --line: #3c3a35; --accent: #d97757;
+      --ok: #5fb37f; --warn: #d9a441; --bad: #e0675f; --chip: #393733; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 28px 60px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  h1 { font: 600 22px/1.2 ui-serif, Georgia, serif; margin: 0; flex: 1; }
+  h2 { font-size: 15px; margin: 0; }
+  .sub { color: var(--muted); font-size: 12px; }
+  button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .server { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .folder { font-family: ui-monospace, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+  .chip { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); }
+  .note { font-size: 12px; margin-top: 6px; }
+  .note.warn { color: var(--warn); } .note.bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  td.mono { font-family: ui-monospace, Menlo, monospace; }
+  tr:last-child td { border-bottom: 0; }
+  pre { font: 11px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 12px; max-width: 80%; display: none; }
+  label.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="grow"><h1>Servers</h1><div class="sub">Remote Control servers on this Mac, one per profile and folder. They keep running when this app is closed.</div></div>
+    <button id="refresh">Refresh</button>
+    <button id="edit">Edit profiles</button>
+  </header>
+  <div id="banner"></div>
+  <div id="profiles"></div>
+  <div id="unmanaged"></div>
+  <div class="card" id="cleanup"></div>
+  <div class="card" id="desktop"></div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, attrs = {}, ...kids) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+    return el;
+  };
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, 6000); }
+  async function act(fn, done) {
+    try { const r = await fn(); if (done) toast(typeof done === 'function' ? done(r) : done); } catch (e) { toast(String(e.message || e).replace(/^Error invoking remote method 'mgr': (Error: )?/, '')); }
+    refresh();
+  }
+  const short = (id) => (id ? id.replace(/^cse_/, '').slice(0, 10) + '…' : '—');
+  const idle = (hrs) => (hrs == null ? '—' : hrs < 1 ? `${Math.round(hrs * 60)} min` : `${hrs} h`);
+
+  function sessionsTable(sessions) {
+    if (!sessions.length) return h('div', { class: 'note sub' }, 'No open sessions.');
+    return h('table', {},
+      h('tr', {}, h('th', {}, 'Session'), h('th', {}, 'Idle'), h('th', {}, 'Memory'), h('th', {}, 'Keep'), h('th', {}, '')),
+      sessions.map((s) => h('tr', {},
+        h('td', { class: 'mono', title: s.sessionId || '' }, short(s.sessionId)),
+        h('td', {}, idle(s.idleHours)),
+        h('td', {}, `${s.rssMB} MB`),
+        h('td', {}, h('input', { type: 'checkbox', checked: s.kept, title: 'Never end this session automatically', onchange: (e) => act(() => window.mgr.keep(s.sessionId || s.pid, e.target.checked)) })),
+        h('td', {}, h('button', { class: 'danger', onclick: () => confirm(`End session ${short(s.sessionId)}? Its process stops and its memory is freed.`) && act(() => window.mgr.endSession(s.pid), 'Session ended') }, 'End')))));
+  }
+
+  function serverBlock(s) {
+    const state = s.problem ? h('span', { class: 'chip bad' }, 'Problem')
+      : s.pid ? h('span', { class: 'chip ok' }, `Running · pid ${s.pid}`)
+      : s.loaded ? h('span', { class: 'chip warn' }, 'Starting…')
+      : h('span', { class: 'chip' }, 'Stopped');
+    const on = s.loaded || s.pid;
+    return h('div', { class: 'server' },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'folder' }, s.folder), h('div', { class: 'sub' }, `${s.sessions.length} session${s.sessions.length === 1 ? '' : 's'} · ${s.rssMB} MB · ${s.configDir.replace(/^\/Users\/[^/]+/, '~')}`)),
+        state,
+        on ? h('button', { onclick: () => act(() => window.mgr.restart(s.key), 'Restarted') }, 'Restart') : null,
+        on ? h('button', { onclick: () => confirm(`Stop the ${s.key} server? Its ${s.sessions.length} session(s) go offline.`) && act(() => window.mgr.stop(s.key), 'Stopped') }, 'Stop')
+           : h('button', { class: 'primary', disabled: !!s.problem, onclick: () => act(() => window.mgr.start(s.key), 'Started') }, 'Start')),
+      s.problem ? h('div', { class: 'note bad' }, s.problem) : null,
+      s.terminal.map((t) => h('div', { class: 'note warn row' },
+        h('span', { class: 'grow' }, `Also running from a Terminal window (pid ${t.pid}, ${t.sessions.length} sessions). Stop it once those sessions are done, then use Start here.`),
+        h('button', { onclick: () => confirm(`Stop the Terminal-started server (pid ${t.pid})? Its ${t.sessions.length} session(s) go offline.`) && act(() => window.mgr.stopUnmanaged(t.pid), 'Stopped') }, 'Stop it'))),
+      sessionsTable(s.sessions));
+  }
+
+  function render(st, packaged) {
+    $('banner').replaceChildren(packaged ? '' : h('div', { class: 'card note warn' }, 'Running from source: servers started here run the development copy of the app. Start servers from the installed app instead.'));
+    const groups = new Map();
+    for (const s of st.servers) { if (!groups.has(s.profileId)) groups.set(s.profileId, []); groups.get(s.profileId).push(s); }
+    $('profiles').replaceChildren(...[...groups.values()].map((list) => {
+      const s0 = list[0];
+      const mismatch = s0.expectedAccount && s0.account && s0.expectedAccount !== s0.account;
+      return h('div', { class: 'card' },
+        h('div', { class: 'row' }, h('h2', { class: 'grow' }, s0.profileName), h('span', { class: 'sub' }, s0.account ? `CLI signed in as ${s0.account}` : 'CLI not signed in')),
+        mismatch ? h('div', { class: 'note bad' }, `This profile expects ${s0.expectedAccount}, but its Claude config (${s0.configDir}) is signed in as ${s0.account}. Sessions would land in the wrong account.`) : null,
+        list.map(serverBlock));
+    }));
+    if (!st.servers.length) $('profiles').replaceChildren(h('div', { class: 'card note' }, 'No servers yet. Add a profile with working folders on the Profiles screen.'));
+    $('unmanaged').replaceChildren(st.unmanaged.length ? h('div', { class: 'card' },
+      h('h2', {}, 'Other servers'), h('div', { class: 'sub' }, 'Running on this Mac but not matching any profile above.'),
+      st.unmanaged.map((u) => h('div', { class: 'server' },
+        h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'folder' }, u.cwd || '?'), h('div', { class: 'sub' }, `pid ${u.pid} · ${u.sessions.length} sessions · ${(u.configDir || '').replace(/^\/Users\/[^/]+/, '~')}`)),
+          h('button', { onclick: () => confirm(`Stop server pid ${u.pid}? Its ${u.sessions.length} session(s) go offline.`) && act(() => window.mgr.stopUnmanaged(u.pid), 'Stopped') }, 'Stop')),
+        sessionsTable(u.sessions)))) : '');
+    const c = st.cleanup;
+    $('cleanup').replaceChildren(
+      h('div', { class: 'row' },
+        h('h2', { class: 'grow' }, 'Automatic cleanup'),
+        h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: c.enabled, onchange: (e) => act(() => window.mgr.setCleanup(e.target.checked), e.target.checked ? 'Cleanup on: runs hourly' : 'Cleanup off') }), c.enabled ? (c.loaded ? 'On' : 'On (not loaded)') : 'Off')),
+      h('div', { class: 'sub' }, `Hourly, ends sessions idle for ${c.idleHours} h or more (under ${c.idleCpuPerHour} CPU seconds an hour). Kept sessions are skipped. Desktop app sessions ${c.includeDesktop ? 'are' : 'are not'} included. Change the numbers under "cleanup" in profiles.json.`),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        h('button', { onclick: () => act(() => window.mgr.reap(true), (r) => r.ended.length ? `Would end ${r.ended.length}: ${r.ended.join('; ')}` : `Checked ${r.checked}; nothing idle long enough yet`) }, 'Preview'),
+        h('button', { onclick: () => confirm('End every session that has been idle long enough now?') && act(() => window.mgr.reap(false), (r) => `Ended ${r.ended.length} of ${r.checked}`) }, 'Run now')),
+      st.log.length ? h('pre', {}, st.log.join('\n')) : null);
+    $('desktop').replaceChildren(h('h2', {}, 'Claude desktop app'),
+      h('div', { class: 'sub' }, `${st.desktop.count} Code sessions using about ${st.desktop.rssMB} MB. These are not Remote Control sessions and do not come back from the web if ended; close tabs you are done with in the desktop app.`));
+  }
+
+  let busy = false;
+  async function refresh() {
+    if (busy) return;
+    busy = true;
+    try { render(await window.mgr.status(), await window.mgr.packaged()); } catch (e) { toast(String(e.message || e)); }
+    busy = false;
+  }
+  $('refresh').addEventListener('click', refresh);
+  $('edit').addEventListener('click', () => window.mgr.openConfig());
+  refresh();
+  setInterval(() => { if (!document.hidden) refresh(); }, 10000);
+</script>
+</body>
+</html>
