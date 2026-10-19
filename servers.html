@@ -147,9 +147,15 @@
   const attention = (c) => c.state !== 'connected' && c.state !== 'disabled';
 
   async function checkMcp(key) {
+    const before = mcp[key]?.servers;
     mcp[key] = { ...mcp[key], checking: true };
     rerender();
     try { mcp[key] = { ...(await window.mgr.mcpList(key)), checking: false }; } catch (e) { mcp[key] = { ...mcp[key], checking: false, error: errText(e) }; }
+    // A server that has appeared or connected since the last check, from here or from Claude Code in
+    // Terminal, is not in the open sessions yet: they keep the connections they started with.
+    const was = new Map((before || []).map((c) => [c.name, c.state]));
+    const gained = before && (mcp[key].servers || []).some((c) => c.state === 'connected' && was.get(c.name) !== 'connected');
+    if (gained && last?.[0].servers.find((x) => x.key === key)?.sessions.length) restartHint.add(key);
     rerender();
     return mcp[key];
   }

@@ -11,7 +11,7 @@ An unofficial macOS app for running several Claude accounts side by side, each i
 
 ## Why this exists
 
-If you use more than one Claude account on one Mac (a work seat and a personal plan, two subscriptions to cover your usage, a client's organisation), the existing options all break down somewhere:
+Plenty of people have more than one Claude account on one Mac: a personal plan alongside a seat from their employer, a seat from each client they work for, or two subscriptions to cover their usage. Each needs its own sign-in, its own Claude Code login and MCP sign-ins, and its own folders kept apart. The existing options all break down somewhere:
 
 - **The Claude desktop app is one account per Mac.** Only one copy runs at a time, and every Claude Code session it starts bills whichever account it is signed in to. Switching means signing out and back in.
 - **Remote Control sessions never go away.** Each Remote Control session is a process on your Mac that stays alive after its last turn, holding 150 to 500 MB plus its MCP servers. They pile up: dozens of sessions holding over 10 GB is easy to reach. Nothing lists them, clears the idle ones, or brings one back when you want it again.
@@ -37,14 +37,14 @@ Claude Profiles fixes all of these in one app.
 - **Stranded sessions come back when you open them.** Open a session no server can reach any more and the app carries it on as a new session with the whole conversation, then switches the view to it.
 - **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
-- **Reconnect MCP servers per account.** See which of each profile's MCP servers and claude.ai connectors need signing in again, and sign in from the Servers screen, under the right account, without opening Terminal.
+- **MCP servers per account.** See each profile's MCP servers and claude.ai connectors, grouped by where they are configured. Sign in again to the ones that need it, under the right account, and add or remove servers, all from the Servers screen.
 - **Links behave.** Links to anything outside Claude open in your default browser. Claude links stay in the profile. Right-click any link for **Open Link in Browser** or **Copy Link**.
 - **Guard rails.** Warns when a profile's Claude Code login is a different account from the profile's, refuses to start a server in a folder Claude Code hasn't trusted, and can pin folders to accounts (for example, a client's folders may only run under that client's account).
 - **Status at a glance.** A dot on each profile's icon shows whether its servers are running, and a badge shows how many sessions are open.
 
 ## Requirements
 
-- macOS (built and tested on macOS 15; Intel and Apple Silicon builds come from the same source).
+- macOS. Built and tested on macOS 15 on an Intel Mac. `npm run package` builds for the Mac it runs on, so Apple Silicon gets a native build from the same source.
 - [Node.js](https://nodejs.org/) 20 or later, to build the app.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed, with `claude` on your shell's `PATH`, and a version that supports `claude remote-control`.
 - A Claude subscription for each account that includes Claude Code and Remote Control.
@@ -151,7 +151,7 @@ The **Servers** screen lists every profile's folders and their Remote Control se
 - **Other servers** lists Remote Control servers that match no profile, so you can stop strays.
 - **MCP connections** lists, under each folder, what that profile's sessions connect to there: its own MCP servers, the folder's `.mcp.json`, and the account's claude.ai connectors. They are grouped the way `/mcp` groups them (Project, Local, User, claude.ai, Plugins), each under the file it comes from. They are checked when the screen opens and when you press **Check**, not on every refresh, because checking starts each server. Only the ones that need attention are listed; **Show all** lists the rest. Each profile has its own Claude config, so it has its own servers and its own sign-ins: a server added or signed in to under one profile, or in plain `claude` with the default `~/.claude`, is not there for another.
   - **Sign in** fixes a server that needs signing in. A claude.ai connector opens in a window signed in to that profile, so it is connected to the right account. Any other server opens in your default browser, and the app picks up the sign-in when the browser hands it back. **Cancel** gives up waiting.
-  - **Open sessions keep the connections they started with.** New sessions use the new sign-in straight away. To reload the open ones, use **Restart server** when the app offers it; a restart keeps the sessions.
+  - **Open sessions keep the connections they started with.** New sessions get a new sign-in or a new server straight away; open ones do not. When a check finds a server newly connected or added, whether you did it here or with Claude Code in Terminal, the app offers **Restart server**: the sessions reconnect, and each loads its connections afresh on its next message. A restart keeps the sessions. A continued session (see [Restarts and stranded sessions](#restarts-and-stranded-sessions)) is not under a server: **End** it and open it again in its profile.
   - **Add server** adds one with `claude mcp add-json`. Choose where it goes: **User** (this profile, every folder), **Local** (this profile, this folder only) or **Project** (the folder's `.mcp.json`, shared with everyone who uses the folder, including every profile that serves it). Then choose HTTP, SSE or a command (stdio), and add headers or environment variables if it needs them; they are saved as plain text in that file. A server that signs in with OAuth needs no headers: add it, then press **Sign in**.
   - **Remove** removes a Project, Local or User server with `claude mcp remove`. claude.ai connectors and plugins are managed on claude.ai and in Claude Code.
   - **Pending approval** means the server comes from the folder's `.mcp.json` and has not been approved yet. **Open in Terminal** opens Claude Code there; approve it with `/mcp`. The approval is saved in the folder (`.claude/settings.local.json`), so it applies to every profile that serves that folder.
@@ -177,7 +177,7 @@ A plain stop followed by a start, which is what a Restart button does, hits the 
 
 **Stopping a server cleanly.** The helper that launchd runs signals only the `claude remote-control` process, the way Ctrl+C would, and waits for it to exit. The launchd job allows a minute for that (`ExitTimeOut`). Signalling the whole process group would end every session underneath at once.
 
-**Restarting in order.** **Restart** returns from the stop only once the server process has gone and launchd has finished unloading the job, and only then starts the next one. The new server finds the old environment free, takes it back over, and the sessions reconnect. A restart takes a second or two.
+**Restarting in order.** **Restart** returns from the stop only once the server process has gone and launchd has finished unloading the job, and only then starts the next one. The new server finds the old environment free, takes it back over, and the sessions reconnect. A restart takes a few seconds, or up to about a minute while sessions finish what they are doing.
 
 **Restarting a server that died.** The helper exits as soon as `claude` does. Before, the shell kept the job looking alive, so launchd never restarted it. Now launchd starts it again within its 60-second throttle, on the same environment.
 
@@ -188,7 +188,7 @@ A plain stop followed by a start, which is what a Restart button does, hits the 
 3. It starts the resume as a detached process, so it outlives the app the way the servers do. It reads the new session's ID from the record the CLI keeps in `<config>/sessions/<pid>.json`.
 4. It switches the view to the new session and remembers the pair in `state/continued.json`. Opening the stranded original again goes straight to the continuation, and a continuation that has stopped (after a reboot, say) is continued again from the same transcript.
 
-**Retiring dead environments.** Every environment a server ever registered stays on claude.ai, all with the same name. The new-session picker shows one entry per folder and can pick a dead one, so the folder reads "offline" while its server is running. Once a folder's server is online, the app archives this Mac's other environments for that folder (a minute after it starts, after **Start** and **Restart**, and every half hour). Archiving removes only the environment from the picker: its sessions stay listed on claude.ai, and opening one continues it as above. New sessions open where the composer was last pointed, which claude.ai keeps in the browser's storage for that sign-in. Pointed at a dead environment, the folder reads "offline"; once that environment is archived, claude.ai falls back to the cloud and remembers that instead. So before archiving, the app points that saved choice at the folder's live environment and reloads an open new-session screen. It also moves stars and per-place defaults (model, effort) from the archived environment to the live one.
+**Retiring dead environments.** Every environment a server ever registered stays on claude.ai, all with the same name. The new-session picker shows one entry per folder and can pick a dead one, so the folder reads "offline" while its server is running. Once a folder's server is online, the app archives this Mac's other environments for that folder (a minute after the app opens, a minute after **Start** and **Restart**, and every half hour while the app is open; see [Privacy and security](#privacy-and-security)). Archiving removes only the environment from the picker: its sessions stay listed on claude.ai, and opening one continues it as above. New sessions open where the composer was last pointed, which claude.ai keeps in the browser's storage for that sign-in. Pointed at a dead environment, the folder reads "offline"; once that environment is archived, claude.ai falls back to the cloud and remembers that instead. So before archiving, the app points that saved choice at the folder's live environment and reloads an open new-session screen. It also moves stars and per-place defaults (model, effort) from the archived environment to the live one.
 
 Older sessions need two more steps, which the app also takes. Claude Code versions before about 2.1.300 named transcripts at random, so the app looks for one by content: claude.ai's event log for the session carries each message's ID, and the transcript stores the same IDs. Only transcripts created around the session's start are searched, so a large history stays quick. Such sessions, which have no environment on claude.ai, usually reconnect under their original address. And the interactive CLI can open on first-run screens (theme, welcome, folder trust) in a Claude config that has only ever run Remote Control. The app presses Enter for the default on each, as clicking through would, until the session has registered with claude.ai.
 
@@ -220,6 +220,7 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 | Server and cleanup jobs | `~/Library/LaunchAgents/io.github.jonkafton.claude-profiles.*.plist` |
 | Claude Code logins | each profile's `configDir`, for example `~/.claude-work` |
 | Server logs | `~/Library/Application Support/Claude Profiles/logs/<profile>-<folder>.err` and `manager.log` |
+| What the app changes in Claude Code config folders | see [Privacy and security](#privacy-and-security) |
 
 ## Troubleshooting
 
@@ -244,16 +245,48 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 
 ## Privacy and security
 
-- No telemetry. The app talks only to the sites you open in it.
-- To show setup progress it checks whether a profile's storage holds claude.ai's sign-in cookie; it never reads the cookie's value. It reads each Claude Code config's `.claude.json` for the signed-in email and folder trust, and never writes to it.
-- Web permissions are limited to notifications, clipboard, fullscreen and microphone (for voice input).
+No telemetry, and no servers of its own. The app talks to claude.ai with each profile's sign-in, loads the pages you open, and runs the `claude` CLI on your Mac. Everything it does beyond showing pages is listed here.
+
+### Calls to claude.ai in the background
+
+These use claude.ai's internal web endpoints, the ones its own pages call, with the profile's sign-in. They are not a documented API: they can change without notice, and if one does, the feature that uses it stops working while the rest of the app carries on. Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) restrict automated access to its services; read them and decide whether these calls suit your accounts.
+
+| When | What the app does | Changes your account? |
+|---|---|---|
+| While the Servers screen is open, at most once a minute per profile | Lists your open Claude Code sessions, to show their titles and last activity. | No. |
+| When a profile shows a Claude Code session | Reads that session's record, and for an older session its latest message IDs, to tell whether it is [stranded](#restarts-and-stranded-sessions). | No. If it is stranded, the app starts a new session from its transcript on your Mac, as `claude --resume` would. |
+| A minute after the app opens, every 30 minutes while it is open, and a minute after **Start** or **Restart**, for each profile with a running server | Lists your organisations and this Mac's environments, then for each folder whose server is online: archives this Mac's offline environments for that folder, moves your starred environments and per-place defaults (model, effort) to the live one in your Claude Code settings, and points the saved place for new sessions at it in claude.ai's browser storage for that sign-in. | Yes: archived environments, those settings, and the saved place. There is no setting to turn this off yet. |
+
+The launchd jobs that keep servers and cleanup running while the app is closed only run `claude` and local process checks; they make none of these calls.
+
+### Changes on your Mac outside the app's data folder
+
+- **`~/Library/LaunchAgents`**: a plist for each running server, and one for cleanup when it is on. Stopping a server moves its plist into the data folder (`state/launchd/`).
+- **Claude Code config folders** (each profile's `configDir`):
+  - Continuing a stranded session copies its transcript into the profile's config folder when it sits under another one.
+  - Before the first continuation in a config folder that has only ever run Remote Control, the app marks Claude Code's onboarding as done in `.claude.json` (`hasCompletedOnboarding`), after saving a copy as `.claude.json.before-onboarding-<time>`. While a continuation starts, it presses Enter on any first-run screen.
+  - When you ask, through the CLI: **Add server** and **Remove** (`claude mcp add-json`, `claude mcp remove`) write `.claude.json` or the folder's `.mcp.json`, and **Sign in** (`claude mcp login`) saves the server's token wherever Claude Code keeps it.
+- **Terminal**: setup buttons and **Open in Terminal** open a Terminal window with the command, through AppleScript. If macOS does not allow that, the command is copied to your clipboard instead.
+
+### What it reads
+
+- Each config's `.claude.json`: the signed-in email, folder trust, whether Remote Control was accepted, onboarding state, and the names (not the settings) of MCP servers. The names in a folder's `.mcp.json` the same way.
+- Files Claude Code keeps in each config folder: `bridge-pointer.json` (a folder's environment), `sessions/<pid>.json` (which claude.ai session a process opened), and transcripts, which it searches for message IDs only to find an older stranded session's transcript.
+- Processes: `ps` and `lsof` list `claude` processes, their working folders, and the `CLAUDE_CONFIG_DIR` in their environment.
+- Whether a profile's storage holds claude.ai's sign-in cookie, to show setup progress. It never reads the cookie's value.
+
+### The embedded browser
+
+- Profile pages run sandboxed, with no access to the app or your files.
+- They identify as the Chrome version the app embeds, because some sign-in pages refuse a browser that names Electron. Google and Apple refuse it anyway.
+- Web permissions are limited to notifications, clipboard, fullscreen, and camera and microphone, which are granted together (claude.ai uses the microphone for voice input).
 
 ## Uninstall
 
 1. On the Servers screen, stop every server, and switch cleanup off.
 2. Quit the app and delete `~/Applications/Claude Profiles.app`.
 3. Delete any remaining `~/Library/LaunchAgents/io.github.jonkafton.claude-profiles.*.plist` files (stopped servers are parked in `state/launchd/` and are not loaded).
-4. Delete `~/Library/Application Support/Claude Profiles/` to remove profiles and sign-ins, and any `~/.claude-<profile>` folders you no longer need.
+4. Delete `~/Library/Application Support/Claude Profiles/` to remove profiles and sign-ins, and any `~/.claude-<profile>` folders you no longer need. In config folders you keep, you can delete the `.claude.json.before-onboarding-*` backups the app made.
 
 ## Development
 
@@ -279,4 +312,4 @@ Servers started from a source run point at the development copy of Electron, so 
 
 ---
 
-Built by the team behind [1Presence](https://1presence.com/?utm_source=github&utm_medium=readme&utm_campaign=claude-profiles).
+Made by [1Presence](https://1presence.com/?utm_source=github&utm_medium=readme&utm_campaign=claude-profiles).
