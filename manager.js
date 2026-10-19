@@ -169,12 +169,17 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   }
 
   // ---- the server process itself (run by launchd through helper.js) ----------------------------
+  // A login shell takes seconds to start and now and then fails to, so the app keeps the last PATH it
+  // got for a few minutes, and falls back to it when a fresh lookup fails.
+  let knownPath = null; // { at, value }
   async function loginPath() {
+    if (knownPath && Date.now() - knownPath.at < 5 * 60000) return knownPath.value;
     try {
       const { stdout } = await run('/bin/zsh', ['-lic', 'printf "\\n%s" "$PATH"'], { timeout: 20000 });
       const p = stdout.split('\n').pop().trim();
-      if (p) return p;
+      if (p) { knownPath = { at: Date.now(), value: p }; return p; }
     } catch { /* fall through */ }
+    if (knownPath) return knownPath.value;
     return [process.env.PATH, `${HOME}/.local/bin`, '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin'].filter(Boolean).join(':');
   }
   function which(cmd, PATH) {
@@ -195,16 +200,20 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   async function continueRun(key, transcript, title) {
     await runClaude(`continue ${transcript}`, config().servers.find((x) => x.key === key), ['--resume', transcript, '--remote-control', title || 'Continued session'], { answerSetup: transcript });
   }
-  async function runClaude(what, s, argv, { answerSetup } = {}) {
-    if (!s || s.problem) { console.error(`${what}: ${s ? s.problem : 'not in profiles.json'}`); process.exit(78); }
+  // claude from the login shell's PATH, and the environment it runs with under a profile's Claude config.
+  async function claudeEnv(cfgDir) {
     const PATH = await loginPath();
-    const claude = which('claude', PATH);
-    if (!claude) { console.error(`${what}: claude not found on PATH`); process.exit(78); }
-    const env = { ...process.env, PATH, CLAUDE_CONFIG_DIR: s.configDir };
+    const env = { ...process.env, PATH, CLAUDE_CONFIG_DIR: cfgDir };
     for (const k of ['ELECTRON_RUN_AS_NODE', 'CLAUDE_PROFILES_DIR', 'CLAUDE_PROFILES_LABEL_PREFIX']) delete env[k];
     // Markers a Claude Code session sets for its children. Inherited (the app started from inside a
     // session), they make claude stop saving its transcript and recording the claude.ai session it opens.
     for (const k of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT']) delete env[k];
+    return { claude: which('claude', PATH), env };
+  }
+  async function runClaude(what, s, argv, { answerSetup } = {}) {
+    if (!s || s.problem) { console.error(`${what}: ${s ? s.problem : 'not in profiles.json'}`); process.exit(78); }
+    const { claude, env } = await claudeEnv(s.configDir);
+    if (!claude) { console.error(`${what}: claude not found on PATH`); process.exit(78); }
     // claude draws a terminal UI and wants a TTY: script(1) provides a pty. Its stdin must be a
     // real pipe that never closes; Node's own 'pipe' stdio is a socket, which script rejects, so the
     // shell's `tail -f` supplies one.
@@ -413,6 +422,179 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return skip('the continuation did not open a session in time');
   }
 
+  // ---- MCP connections ---------------------------------------------------------------------------
+  // What a folder's sessions connect to under a profile, as `claude mcp list` reports it: user and local
+  // servers from the profile's .claude.json, the folder's .mcp.json, and the account's claude.ai connectors.
+  // It health-checks every server (starting the stdio ones), so it runs when asked, not on each status poll.
+  const MCP_LOGIN_TIMEOUT_MS = 10 * 60000;
+  const plainText = (s) => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
+  function mcpTarget(key) {
+    const s = config().servers.find((x) => x.key === key);
+    if (!s) throw new Error(`no server ${key} in profiles.json`);
+    if (s.problem) throw new Error(s.problem);
+    return s;
+  }
+  // Lines look like `name: https://host/mcp (HTTP) - ! Needs authentication` or `name: command args - ✔ Connected`.
+  function parseMcpList(text) {
+    const out = [];
+    for (const line of plainText(text).split('\n')) {
+      const m = line.match(/^(.+?): (.*) - (.+)$/);
+      if (!m) continue;
+      const [, name, target, raw] = m;
+      const state = /needs auth/i.test(raw) ? 'needs-auth' : /pending approval/i.test(raw) ? 'pending' : /fail/i.test(raw) ? 'failed'
+        : /disabled/i.test(raw) ? 'disabled' : /connected/i.test(raw) ? 'connected' : 'other';
+      const connector = name.startsWith('claude.ai ');
+      out.push({ name, target, state, detail: raw.replace(/^[^\p{L}]+/u, '').trim(), connector, canSignIn: connector || /^https?:\/\//.test(target) });
+    }
+    return out;
+  }
+  // Which file configures each server, by name only: the values can hold keys and are never read out.
+  // When a name is in several, the CLI uses local over project over user, so it is labelled the same way.
+  const MCP_SCOPES = ['local', 'project', 'user'];
+  function mcpSources(s) {
+    const own = path.join(s.configDir, '.claude.json');
+    const shared = path.join(s.folder, '.mcp.json');
+    const j = readJson(own, {});
+    return {
+      files: { local: own, user: own, project: shared },
+      names: {
+        local: new Set(Object.keys(j.projects?.[s.folder]?.mcpServers || {})),
+        project: new Set(Object.keys(readJson(shared, {}).mcpServers || {})),
+        user: new Set(Object.keys(j.mcpServers || {})),
+      },
+    };
+  }
+  async function mcpList(key) {
+    const s = mcpTarget(key);
+    const { claude, env } = await claudeEnv(s.configDir);
+    if (!claude) throw new Error('claude not found on PATH');
+    let stdout;
+    try { ({ stdout } = await run(claude, ['mcp', 'list'], { cwd: s.folder, env, timeout: 90000, maxBuffer: 4 * 1024 * 1024 })); }
+    catch (e) { if (!e.stdout) throw new Error(`claude mcp list failed: ${(e.stderr || e.message).trim().split('\n').pop()}`); stdout = e.stdout; }
+    const { files, names } = mcpSources(s);
+    const scopeOf = (c) => (c.connector ? 'claude.ai' : c.name.startsWith('plugin:') ? 'plugin' : MCP_SCOPES.find((x) => names[x].has(c.name)) || 'other');
+    return { at: new Date().toISOString(), files, servers: parseMcpList(stdout).map((c) => ({ ...c, scope: scopeOf(c) })) };
+  }
+
+  // Adding and removing go through the CLI too (`claude mcp add-json` / `remove`), so the config files are
+  // only ever written the way Claude Code writes them. Headers come one per line as `Name: value`,
+  // environment variables as `NAME=value`, and a stdio command as one line split the way a shell would.
+  function shellWords(line) {
+    const words = [];
+    let word = null;
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (ch === quote) quote = null;
+        else if (ch === '\\' && quote === '"' && i + 1 < line.length) word += line[++i];
+        else word += ch;
+      } else if (ch === '"' || ch === "'") { quote = ch; word ??= ''; }
+      else if (ch === '\\' && i + 1 < line.length) word = (word ?? '') + line[++i];
+      else if (/\s/.test(ch)) { if (word !== null) words.push(word); word = null; }
+      else word = (word ?? '') + ch;
+    }
+    if (quote) throw new Error('The command has an unclosed quote.');
+    if (word !== null) words.push(word);
+    return words;
+  }
+  function pairs(text, sep, what) {
+    const out = {};
+    for (const line of String(text || '').split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const at = line.indexOf(sep);
+      if (at < 1) throw new Error(`Each ${what} goes on its own line as ${sep === ':' ? 'Name: value' : 'NAME=value'}: "${line}"`);
+      out[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  async function mcpCli(s, args) {
+    const { claude, env } = await claudeEnv(s.configDir);
+    if (!claude) throw new Error('claude not found on PATH');
+    try {
+      const { stdout } = await run(claude, ['mcp', ...args], { cwd: s.folder, env, timeout: 30000 });
+      return plainText(stdout).trim();
+    } catch (e) {
+      throw new Error(plainText(e.stderr || e.stdout || e.message).trim().split('\n').filter(Boolean).pop() || 'claude mcp failed');
+    }
+  }
+  async function mcpAdd(key, input) {
+    const s = mcpTarget(key);
+    const name = String(input.name || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) throw new Error('Use letters, numbers, dots, dashes or underscores for the name.');
+    if (!MCP_SCOPES.includes(input.scope)) throw new Error('Choose where to add it.');
+    let config;
+    if (input.transport === 'http' || input.transport === 'sse') {
+      const url = String(input.url || '').trim();
+      if (!/^https?:\/\/\S+$/.test(url)) throw new Error('Enter the server URL, starting with https://.');
+      config = { type: input.transport, url, headers: pairs(input.headers, ':', 'header') };
+    } else if (input.transport === 'stdio') {
+      const [command, ...args] = shellWords(String(input.command || '').trim());
+      if (!command) throw new Error('Enter the command that starts the server.');
+      config = { type: 'stdio', command, args, env: pairs(input.env, '=', 'variable') };
+    } else {
+      throw new Error('Choose a connection type.');
+    }
+    const out = await mcpCli(s, ['add-json', '--scope', input.scope, name, JSON.stringify(config)]);
+    log(`added MCP server ${name} (${input.scope}) for ${key}`);
+    return out;
+  }
+  async function mcpRemove(key, name, scope) {
+    const s = mcpTarget(key);
+    if (!MCP_SCOPES.includes(scope)) throw new Error(`${name} is not one this app can remove.`);
+    const out = await mcpCli(s, ['remove', String(name), '--scope', scope]);
+    log(`removed MCP server ${name} (${scope}) for ${key}`);
+    return out;
+  }
+
+  // Signs in to one MCP server the way `claude mcp login` does, under the profile's config and in the
+  // folder, so a project server resolves. --no-browser makes the CLI print the authorization link rather
+  // than open the default browser, so the caller chooses where it opens (onUrl). For an HTTP server the
+  // CLI then waits on localhost for the redirect and saves the token; a claude.ai connector's link is
+  // finished on claude.ai and the CLI exits at once. Even with the localhost listener the CLI insists on a
+  // terminal for its "paste the redirect URL" prompt, so it runs in script(1), fed the way a server is.
+  // Returns { done, cancel, url }: done resolves with the CLI's last lines once it has exited.
+  async function mcpLogin(key, name, onUrl) {
+    const s = mcpTarget(key);
+    const { claude, env } = await claudeEnv(s.configDir);
+    if (!claude) throw new Error('claude not found on PATH');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const feed = path.join(stateDir, `keys-mcp-login-${Date.now()}`);
+    fs.writeFileSync(feed, '');
+    // Its own process group, so cancelling takes sh, tail, script and claude together.
+    const child = spawn('/bin/sh', ['-c', 'tail -f "$0" | exec /usr/bin/script -q /dev/null "$@"', feed, claude, 'mcp', 'login', name, '--no-browser'],
+      { cwd: s.folder, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    let output = '';
+    let url = null;
+    const collect = (chunk) => {
+      output += chunk;
+      if (url) return;
+      const m = plainText(output).match(/Visit this URL[^\n]*\n\s*(https?:\/\/\S+)/);
+      if (m) { url = m[1]; try { onUrl?.(url); } catch (e) { log(`mcp login ${name}: ${e.message}`); } }
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    let finish;
+    const done = new Promise((r) => { finish = r; });
+    let ended = false;
+    const end = (why) => {
+      if (ended) return;
+      ended = true;
+      clearInterval(watch);
+      clearTimeout(timer);
+      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
+      try { fs.unlinkSync(feed); } catch { /* gone */ }
+      const lines = plainText(output).split('\n').map((l) => l.trim()).filter(Boolean);
+      log(`mcp login ${name} under ${key}: ${why}`);
+      finish({ url, output: lines.slice(-4).join('\n') });
+    };
+    // sh waits on tail, which never ends: the CLI is done once only tail is left.
+    const watch = setInterval(() => { if (!descendants(child.pid).some((p) => !/^tail /.test(p.cmd))) end('finished'); }, 1000);
+    const timer = setTimeout(() => end('timed out'), MCP_LOGIN_TIMEOUT_MS);
+    child.on('exit', () => end('finished'));
+    log(`mcp login ${name} under ${key}: started`);
+    return { done, cancel: () => end('cancelled'), url: () => url };
+  }
+
   // ---- process snapshot ------------------------------------------------------------------------
   async function snapshot() {
     const { stdout } = await run('ps', ['-axo', 'pid=,ppid=,rss=,time=,command='], { maxBuffer: 64 * 1024 * 1024 });
@@ -575,7 +757,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return { checked: sessions.length, ended };
   }
 
-  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig };
+  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig, mcpTarget, mcpList, mcpLogin, mcpAdd, mcpRemove, parseMcpList, shellWords };
 }
 
 module.exports = { createManager };

@@ -529,6 +529,12 @@ ipcMain.handle('mgr', async (event, action, ...args) => {
     keep: (id, on) => mgr.setKeep(id, on),
     setCleanup: (on) => mgr.setCleanup(on),
     reap: (dryRun) => mgr.reap({ dryRun: !!dryRun }),
+    mcpList: (key) => mgr.mcpList(key),
+    mcpLogin: (key, name) => mcpSignIn(key, String(name)),
+    mcpCancel: (key, name) => mcpLogins.get(`${key}\n${name}`)?.cancel(),
+    mcpAdd: (key, input) => mgr.mcpAdd(key, input || {}),
+    mcpRemove: (key, name, scope) => mgr.mcpRemove(key, name, scope),
+    mcpTerminal: (key) => { const s = mgr.mcpTarget(key); return runInTerminal(`cd ${shq(s.folder)} && CLAUDE_CONFIG_DIR=${shq(s.configDir)} claude`); },
     openConfig: () => select(fromPanel(event, SERVERS), PROFILES),
     packaged: () => app.isPackaged,
   };
@@ -538,6 +544,55 @@ ipcMain.handle('mgr', async (event, action, ...args) => {
   if (action === 'start' || action === 'restart') setTimeout(retireStaleEnvironments, 60000);
   return result;
 });
+
+// ---- MCP sign-in -----------------------------------------------------------------------------------
+// The CLI prints the authorization link (manager.mcpLogin) and the app opens it. A claude.ai connector's
+// link starts the connector's sign-in for whichever claude.ai account the browser is signed in to, so it
+// opens in a window on the profile's own sign-in. Any other server's link opens in the default browser,
+// where its own sign-in (Google included) works, and redirects to the CLI waiting on localhost.
+const mcpLogins = new Map(); // `${key}\n${name}` -> the running login
+async function mcpSignIn(key, name) {
+  const id = `${key}\n${name}`;
+  mcpLogins.get(id)?.cancel();
+  const p = profile(mgr.mcpTarget(key).profileId);
+  if (!p) throw new Error(`no profile for ${key}`);
+  let win = null;
+  const login = await mgr.mcpLogin(key, name, (url) => {
+    if (name.startsWith('claude.ai ') && hostOf(url) === 'claude.ai') win = connectorWindow(p, name, url);
+    else shell.openExternal(url);
+  });
+  mcpLogins.set(id, login);
+  try {
+    const { url, output } = await login.done;
+    if (!url) return { error: output || `claude mcp login ${name} printed no sign-in link` };
+    // The CLI is done once it has printed a connector's link; the sign-in is done when its window closes.
+    if (win && !win.isDestroyed()) await new Promise((r) => win.once('closed', r));
+    return { url, opened: win ? 'app' : 'browser' };
+  } finally {
+    if (mcpLogins.get(id) === login) mcpLogins.delete(id);
+  }
+}
+
+function connectorWindow(p, name, url) {
+  const win = new BrowserWindow({ width: 920, height: 780, title: `${p.name} · ${name}`, webPreferences: { session: profileSession(p), sandbox: true, contextIsolation: true } });
+  win.on('page-title-updated', (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(({ url: next }) => { openExternal(next); return { action: 'deny' }; });
+  // Google refuses its sign-in inside embedded browsers. The same link works in the default browser
+  // while that browser is signed in to claude.ai with this profile's account.
+  win.webContents.on('did-navigate', async (_e, at) => {
+    if (!/^accounts\.google\.com$/.test(hostOf(at)) || !/rejected/.test(new URL(at).pathname)) return;
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'info', buttons: ['Open in Browser', 'Copy Link', 'Cancel'], defaultId: 0, cancelId: 2,
+      message: `Google does not allow ${name} to be connected from inside this app.`,
+      detail: `Open the link in your browser instead. Your browser must be signed in to claude.ai as ${p.account || `this profile's account`}, or the connector is added to whichever account it is signed in to.`,
+    });
+    if (response === 0) shell.openExternal(url);
+    if (response === 1) clipboard.writeText(url);
+    if (!win.isDestroyed()) win.close();
+  });
+  win.loadURL(url);
+  return win;
+}
 
 const retiredFile = () => path.join(CONFIG_DIR, 'state', 'retired-environments.json');
 const readJsonFile = (f, fallback) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; } };

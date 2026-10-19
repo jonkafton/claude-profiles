@@ -41,6 +41,22 @@
   pre { font: 11px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; margin: 8px 0 0; max-height: 220px; overflow: auto; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 12px; max-width: 80%; display: none; }
   label.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .mcp { margin-top: 12px; }
+  .mcp .sub.bad { color: var(--bad); }
+  td.target { font-family: ui-monospace, Menlo, monospace; color: var(--muted); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.act { text-align: right; white-space: nowrap; }
+  button.link { border: 0; background: none; color: var(--muted); padding: 4px 2px; text-decoration: underline; }
+  .mcptable th { padding-top: 12px; color: var(--ink); font-weight: 600; }
+  .mcptable th .sub { font-weight: 400; }
+  .addform { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 10px; display: grid; gap: 10px; }
+  .field { display: grid; gap: 4px; }
+  .field > span:first-child { font-size: 12px; color: var(--muted); }
+  .addform input[type=text], .addform textarea { font: 12px/1.4 ui-monospace, Menlo, monospace; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); width: 100%; }
+  .addform textarea { resize: vertical; }
+  .addform [hidden] { display: none; }
+  .choices { display: grid; gap: 4px; }
+  .choices.inline { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .choice { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -69,8 +85,9 @@
     return el;
   };
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, 6000); }
+  const errText = (e) => String(e.message || e).replace(/^Error invoking remote method 'mgr': (Error: )?/, '');
   async function act(fn, done) {
-    try { const r = await fn(); if (done) toast(typeof done === 'function' ? done(r) : done); } catch (e) { toast(String(e.message || e).replace(/^Error invoking remote method 'mgr': (Error: )?/, '')); }
+    try { const r = await fn(); if (done) toast(typeof done === 'function' ? done(r) : done); } catch (e) { toast(errText(e)); }
     refresh();
   }
   const short = (id) => (id ? id.replace(/^cse_/, '').slice(0, 10) + '…' : '—');
@@ -107,7 +124,207 @@
       s.terminal.map((t) => h('div', { class: 'note warn row' },
         h('span', { class: 'grow' }, `Also running from a Terminal window (pid ${t.pid}, ${t.sessions.length} sessions). Stop it once those sessions are done, then use Start here.`),
         h('button', { onclick: () => confirm(`Stop the Terminal-started server (pid ${t.pid})? Its ${t.sessions.length} session(s) go offline.`) && act(() => window.mgr.stopUnmanaged(t.pid), 'Stopped') }, 'Stop it'))),
-      sessionsTable(s.sessions));
+      sessionsTable(s.sessions),
+      mcpBlock(s));
+  }
+
+  // MCP connections per server key: { at, servers, error, checking }. `claude mcp list` health-checks every
+  // server, so it runs once when the screen opens and when asked, not on the 10-second refresh.
+  const mcp = {};
+  const signing = new Set(); // `${key}\n${name}` while its sign-in is open
+  const showAll = new Set(); // server keys listing their connected servers too
+  const restartHint = new Set(); // server keys whose open sessions predate a change to their connections
+  let adding = null; // the open Add server form: { key, name, scope, transport, url, headers, command, env, busy, error }
+  let last = null;
+  // While the Add form is open, background updates leave the page alone so typing is not wiped out.
+  const renderNow = () => { if (last) render(...last); };
+  const rerender = () => { if (!adding) renderNow(); };
+  const tilde = (p) => String(p || '').replace(/^\/Users\/[^/]+/, '~');
+  const MCP_GROUPS = [['project', 'Project'], ['local', 'Local'], ['user', 'User'], ['claude.ai', 'claude.ai'], ['plugin', 'Plugins'], ['other', 'Other']];
+  const REMOVABLE = new Set(['project', 'local', 'user']);
+  const ago = (at) => { const hrs = (Date.now() - Date.parse(at)) / 3600000; return hrs < 1 / 60 ? 'just now' : `${fmtHours(hrs)} ago`; };
+  const MCP_STATE = { connected: ['ok', 'Connected'], 'needs-auth': ['bad', 'Needs sign-in'], failed: ['bad', 'Failed'], pending: ['warn', 'Pending approval'], disabled: ['', 'Disabled'] };
+  const attention = (c) => c.state !== 'connected' && c.state !== 'disabled';
+
+  async function checkMcp(key) {
+    mcp[key] = { ...mcp[key], checking: true };
+    rerender();
+    try { mcp[key] = { ...(await window.mgr.mcpList(key)), checking: false }; } catch (e) { mcp[key] = { ...mcp[key], checking: false, error: errText(e) }; }
+    rerender();
+    return mcp[key];
+  }
+  async function signIn(s, c) {
+    const id = `${s.key}\n${c.name}`;
+    signing.add(id);
+    rerender();
+    let r = null;
+    try { r = await window.mgr.mcpLogin(s.key, c.name); } catch (e) { r = { error: errText(e) }; }
+    const cancelled = !signing.delete(id);
+    if (r.error) { if (!cancelled) toast(r.error); rerender(); return; }
+    const now = (await checkMcp(s.key)).servers?.find((x) => x.name === c.name);
+    if (cancelled) return;
+    if (now?.state === 'connected') {
+      toast(`Signed in to ${c.name}.`);
+      const open = last?.[0].servers.find((x) => x.key === s.key)?.sessions.length;
+      if (open) { restartHint.add(s.key); rerender(); }
+    } else {
+      toast(`${c.name}: ${now ? now.detail : 'no longer listed'}. If you finished signing in, press Check.`);
+    }
+  }
+  function cancelSignIn(s, c) {
+    signing.delete(`${s.key}\n${c.name}`);
+    window.mgr.mcpCancel(s.key, c.name).catch(() => {});
+    rerender();
+  }
+
+  function mcpRow(s, c) {
+    const id = `${s.key}\n${c.name}`;
+    const [tone, label] = MCP_STATE[c.state] || ['', c.detail];
+    let action = null;
+    if (signing.has(id)) {
+      action = [h('span', { class: 'chip warn' }, c.connector ? 'Finish in its window, then close it' : 'Waiting for your browser…'), ' ', h('button', { onclick: () => cancelSignIn(s, c) }, 'Cancel')];
+    } else if ((c.state === 'needs-auth' || c.state === 'failed') && c.canSignIn) {
+      action = h('button', { class: c.state === 'needs-auth' ? 'primary' : null, title: c.connector ? 'Opens in a window signed in to this profile' : 'Opens in your default browser', onclick: () => signIn(s, c) }, c.state === 'needs-auth' ? 'Sign in' : 'Sign in again');
+    } else if (c.state === 'pending' || c.state === 'failed') {
+      const why = c.state === 'pending'
+        ? 'Approve it with /mcp in Claude Code in this folder. The approval is saved in the folder, in .claude/settings.local.json, so it applies to every profile that serves this folder.'
+        : 'Run /mcp in Claude Code in this folder to see why it fails.';
+      action = h('button', { title: why, onclick: () => act(() => window.mgr.mcpTerminal(s.key), (r) => (r.ran ? 'Opened Terminal: run /mcp there' : 'Command copied: paste it into Terminal, then run /mcp')) }, 'Open in Terminal');
+    }
+    if (!signing.has(id) && REMOVABLE.has(c.scope)) action = [action, ' ', h('button', { class: 'link', onclick: () => removeServer(s, c) }, 'Remove')];
+    return h('tr', {},
+      h('td', {}, c.name),
+      h('td', { class: 'target', title: c.target }, c.target),
+      h('td', {}, h('span', { class: `chip ${tone}`, title: c.detail }, label)),
+      h('td', { class: 'act' }, action));
+  }
+
+  function mcpBlock(s) {
+    if (s.problem) return null;
+    const m = mcp[s.key] || {};
+    const list = m.servers || [];
+    const needs = list.filter(attention);
+    const connected = list.filter((c) => c.state === 'connected').length;
+    const summary = m.checking ? 'Checking…' : m.error || (!m.servers ? 'Not checked yet'
+      : !list.length ? 'None configured'
+      : needs.length ? `${needs.length} need${needs.length === 1 ? 's' : ''} attention · ${connected} connected`
+      : `All ${connected} connected`);
+    const shown = showAll.has(s.key) ? list : needs;
+    return h('div', { class: 'mcp' },
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('strong', {}, 'MCP connections'), ' ', h('span', { class: m.error ? 'sub bad' : 'sub' }, summary),
+          m.at && !m.checking && !m.error ? h('span', { class: 'sub' }, ` · checked ${ago(m.at)}`) : null),
+        list.length > needs.length ? h('button', { class: 'link', onclick: () => { if (!showAll.delete(s.key)) showAll.add(s.key); rerender(); } }, showAll.has(s.key) ? 'Hide connected' : 'Show all') : null,
+        h('button', { disabled: adding?.key === s.key, onclick: () => openAdd(s) }, 'Add server'),
+        h('button', { disabled: !!m.checking, onclick: () => checkMcp(s.key) }, 'Check')),
+      adding?.key === s.key ? addForm(s) : null,
+      restartHint.has(s.key) ? h('div', { class: 'note warn row' },
+        h('span', { class: 'grow' }, `Open sessions loaded their MCP connections when they started. New sessions pick up the change; restart the server to reload the ${s.sessions.length} open one${s.sessions.length === 1 ? '' : 's'}.`),
+        h('button', { onclick: () => { restartHint.delete(s.key); act(() => window.mgr.restart(s.key), 'Restarted'); } }, 'Restart server'),
+        h('button', { class: 'link', onclick: () => { restartHint.delete(s.key); rerender(); } }, 'Not now')) : null,
+      shown.length ? mcpTable(s, shown, m.files || {}) : null);
+  }
+
+  // Grouped the way /mcp groups them, each under the file it comes from.
+  function mcpTable(s, list, files) {
+    const source = {
+      project: files.project && ` · ${tilde(files.project)}`,
+      local: files.local && ` · ${tilde(files.local)}, this folder only`,
+      user: files.user && ` · ${tilde(files.user)}`,
+      'claude.ai': ' · connectors on the claude.ai account this profile signs in with',
+    };
+    const rows = [];
+    for (const [scope, label] of MCP_GROUPS) {
+      const items = list.filter((c) => (c.scope || 'other') === scope);
+      if (!items.length) continue;
+      rows.push(h('tr', {}, h('th', { colspan: 4 }, label, source[scope] ? h('span', { class: 'sub' }, source[scope]) : null)));
+      rows.push(...items.map((c) => mcpRow(s, c)));
+    }
+    return h('table', { class: 'mcptable' }, rows);
+  }
+
+  async function removeServer(s, c) {
+    const question = c.scope === 'project'
+      ? `Remove ${c.name} from ${tilde(s.folder)}/.mcp.json? That file is shared, so it goes for everyone who uses this folder, including every profile that serves it.`
+      : `Remove ${c.name} from this profile${c.scope === 'local' ? ' in this folder' : ''}?`;
+    if (!confirm(question)) return;
+    try { await window.mgr.mcpRemove(s.key, c.name, c.scope); toast(`Removed ${c.name}.`); } catch (e) { toast(errText(e)); }
+    checkMcp(s.key);
+  }
+
+  // ---- Add server ----------------------------------------------------------------------------------
+  // No scope is chosen for you: where a server lives decides who gets it, so the form asks.
+  const SCOPE_CHOICES = [
+    ['user', 'User', 'This profile, in every folder.'],
+    ['local', 'Local', 'This profile, in this folder only.'],
+    ['project', 'Project', "This folder's .mcp.json: shared with everyone who uses the folder, including every profile that serves it. Each of them approves it once in Claude Code."],
+  ];
+  function openAdd(s) {
+    adding = { key: s.key, transport: 'http', scope: null };
+    renderNow();
+    document.querySelector('.addform input[type=text]')?.focus();
+  }
+  function closeAdd() { adding = null; renderNow(); }
+
+  function addForm(s) {
+    const f = adding;
+    const file = { user: `${tilde(s.configDir)}/.claude.json`, local: `${tilde(s.configDir)}/.claude.json`, project: `${tilde(s.folder)}/.mcp.json` };
+    const field = (label, input, hint) => h('label', { class: 'field' }, h('span', {}, label), input, hint ? h('span', { class: 'sub' }, hint) : null);
+    const text = (prop, attrs = {}) => h('input', { type: 'text', value: f[prop] || '', spellcheck: 'false', autocomplete: 'off', ...attrs, oninput: (e) => { f[prop] = e.target.value; } });
+    const area = (prop, attrs = {}) => { const t = h('textarea', { rows: 2, spellcheck: 'false', ...attrs, oninput: (e) => { f[prop] = e.target.value; } }); t.value = f[prop] || ''; return t; };
+    const radios = (prop, choices, cls = '') => h('div', { class: `choices ${cls}` }, choices.map(([v, label, hint]) => h('label', { class: 'choice' },
+      h('input', { type: 'radio', name: `${prop}-${s.key}`, value: v, checked: f[prop] === v, disabled: f.busy, onchange: () => { f[prop] = v; update(); } }),
+      h('span', {}, h('strong', {}, label), hint ? h('span', { class: 'sub' }, ` ${hint}`) : null))));
+    const remote = h('div', { class: 'field' },
+      field('URL', text('url', { placeholder: 'https://example.com/mcp' })),
+      field('Headers', area('headers', { placeholder: 'X-Api-Key: …' }), 'Optional, one per line. A server that signs in with OAuth needs none: add it, then press Sign in.'));
+    const local = h('div', { class: 'field' },
+      field('Command', text('command', { placeholder: 'npx -y some-mcp-server --flag' })),
+      field('Environment variables', area('env', { placeholder: 'API_KEY=…' }), 'Optional, one per line.'));
+    const saveNote = h('span', { class: 'sub grow' });
+    const addBtn = h('button', { class: 'primary', type: 'submit' });
+    const update = () => {
+      remote.hidden = f.transport === 'stdio';
+      local.hidden = f.transport !== 'stdio';
+      saveNote.textContent = f.scope ? `Saved in ${file[f.scope]}. Headers and variables are stored there as plain text.` : 'Choose where to add it.';
+      addBtn.disabled = !f.scope || !!f.busy;
+      addBtn.textContent = f.busy ? 'Adding…' : 'Add server';
+    };
+    const form = h('form', { class: 'addform', onsubmit: (e) => { e.preventDefault(); submitAdd(s); } },
+      h('div', { class: 'row' }, h('strong', { class: 'grow' }, 'Add an MCP server'), h('button', { type: 'button', class: 'link', onclick: closeAdd }, 'Cancel')),
+      field('Name', text('name', { placeholder: 'my-server' })),
+      h('div', { class: 'field' }, h('span', {}, 'Add it to'), radios('scope', SCOPE_CHOICES)),
+      h('div', { class: 'field' }, h('span', {}, 'Connection'), radios('transport', [['http', 'HTTP'], ['sse', 'SSE'], ['stdio', 'Command (stdio)']], 'inline')),
+      remote, local,
+      f.error ? h('div', { class: 'note bad' }, f.error) : null,
+      h('div', { class: 'row' }, saveNote, addBtn));
+    update();
+    return form;
+  }
+
+  async function submitAdd(s) {
+    const f = adding;
+    if (!f || f.busy) return;
+    f.busy = true;
+    f.error = null;
+    renderNow();
+    try {
+      await window.mgr.mcpAdd(s.key, { name: f.name, scope: f.scope, transport: f.transport, url: f.url, headers: f.headers, command: f.command, env: f.env });
+    } catch (e) {
+      f.busy = false;
+      f.error = errText(e);
+      renderNow();
+      return;
+    }
+    const name = f.name.trim();
+    adding = null;
+    showAll.add(s.key);
+    toast(`Added ${name}. Checking it…`);
+    const now = (await checkMcp(s.key)).servers?.find((x) => x.name === name);
+    if (now?.state === 'needs-auth') toast(`Added ${name}. It needs signing in: press Sign in.`);
+    else if (now?.state === 'pending') toast(`Added ${name}. Approve it with /mcp in Claude Code in this folder.`);
+    else toast(now ? `Added ${name}: ${now.detail}.` : `Added ${name}, but claude mcp list does not show it in this folder.`);
+    if (last?.[0].servers.find((x) => x.key === s.key)?.sessions.length) { restartHint.add(s.key); rerender(); }
   }
 
   function render(st, packaged) {
@@ -117,8 +334,11 @@
     $('profiles').replaceChildren(...[...groups.values()].map((list) => {
       const s0 = list[0];
       const mismatch = s0.expectedAccount && s0.account && s0.expectedAccount !== s0.account;
+      const signIns = new Set(list.flatMap((s) => (mcp[s.key]?.servers || []).filter((c) => c.state === 'needs-auth').map((c) => c.name))).size;
       return h('div', { class: 'card' },
-        h('div', { class: 'row' }, h('h2', { class: 'grow' }, s0.profileName), h('span', { class: 'sub' }, s0.account ? `CLI signed in as ${s0.account}` : 'CLI not signed in')),
+        h('div', { class: 'row' }, h('h2', { class: 'grow' }, s0.profileName),
+          signIns ? h('span', { class: 'chip bad' }, `${signIns} MCP sign-in${signIns === 1 ? '' : 's'} needed`) : null,
+          h('span', { class: 'sub' }, s0.account ? `CLI signed in as ${s0.account}` : 'CLI not signed in')),
         mismatch ? h('div', { class: 'note bad' }, `This profile expects ${s0.expectedAccount}, but its Claude config (${s0.configDir}) is signed in as ${s0.account}. Sessions would land in the wrong account.`) : null,
         list.map(serverBlock));
     }));
@@ -138,7 +358,7 @@
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('button', { onclick: () => act(() => window.mgr.reap(true), (r) => r.ended.length ? `Would end ${r.ended.length}: ${r.ended.join('; ')}` : `Checked ${r.checked}; nothing idle long enough yet`) }, 'Preview'),
         h('button', { onclick: () => confirm('End every session that has been idle long enough now?') && act(() => window.mgr.reap(false), (r) => `Ended ${r.ended.length} of ${r.checked}`) }, 'Run now')),
-      st.log.length ? h('pre', {}, st.log.join('\n')) : null);
+      st.log.length ? h('pre', {}, st.log.join('\n')) : '');
     $('desktop').replaceChildren(h('h2', {}, 'Claude desktop app'),
       h('div', { class: 'sub' }, `${st.desktop.count} Code sessions using about ${st.desktop.rssMB} MB. These are not Remote Control sessions and do not come back from the web if ended; close tabs you are done with in the desktop app.`));
   }
@@ -147,7 +367,11 @@
   async function refresh() {
     if (busy) return;
     busy = true;
-    try { render(await window.mgr.status(), await window.mgr.packaged()); } catch (e) { toast(String(e.message || e)); }
+    try {
+      last = [await window.mgr.status(), await window.mgr.packaged()];
+      rerender();
+      for (const s of last[0].servers) if (!s.problem && !mcp[s.key]) checkMcp(s.key);
+    } catch (e) { toast(String(e.message || e)); }
     busy = false;
   }
   $('refresh').addEventListener('click', refresh);
