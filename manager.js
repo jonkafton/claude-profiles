@@ -193,9 +193,9 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   // A stranded session carried on: the interactive CLI resumes its transcript with Remote Control on,
   // which claude.ai shows as a new session holding the whole conversation.
   async function continueRun(key, transcript, title) {
-    await runClaude(`continue ${transcript}`, config().servers.find((x) => x.key === key), ['--resume', transcript, '--remote-control', title || 'Continued session']);
+    await runClaude(`continue ${transcript}`, config().servers.find((x) => x.key === key), ['--resume', transcript, '--remote-control', title || 'Continued session'], { answerSetup: transcript });
   }
-  async function runClaude(what, s, argv) {
+  async function runClaude(what, s, argv, { answerSetup } = {}) {
     if (!s || s.problem) { console.error(`${what}: ${s ? s.problem : 'not in profiles.json'}`); process.exit(78); }
     const PATH = await loginPath();
     const claude = which('claude', PATH);
@@ -208,8 +208,31 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     // claude draws a terminal UI and wants a TTY: script(1) provides a pty. Its stdin must be a
     // real pipe that never closes; Node's own 'pipe' stdio is a socket, which script rejects, so the
     // shell's `tail -f` supplies one.
-    const child = spawn('/bin/sh', ['-c', 'tail -f /dev/null | exec /usr/bin/script -q /dev/null "$@"', 'sh', claude, ...argv],
+    // The interactive CLI can open on first-run screens (theme, welcome, folder trust) that wait for a key.
+    // Its input is then a file the helper can type into: tail -f passes on whatever is appended.
+    let feed = '/dev/null';
+    if (answerSetup) {
+      fs.mkdirSync(stateDir, { recursive: true });
+      feed = path.join(stateDir, `keys-${answerSetup}`);
+      fs.writeFileSync(feed, '');
+    }
+    const child = spawn('/bin/sh', ['-c', 'tail -f "$0" | exec /usr/bin/script -q /dev/null "$@"', feed, claude, ...argv],
       { cwd: s.folder, env, stdio: ['ignore', 'ignore', 'inherit'] });
+    if (answerSetup) {
+      // Until claude records the claude.ai session it opened, press Enter now and then: each first-run
+      // screen takes its default, as clicking through it would. An empty prompt line does nothing.
+      let presses = 0;
+      const registered = () => {
+        const c = descendants(child.pid).find(isClaude);
+        const rec = c && readJson(path.join(s.configDir, 'sessions', `${c.pid}.json`), null);
+        return !!rec?.bridgeSessionId;
+      };
+      const typer = setInterval(() => {
+        if (registered() || ++presses > 12) { clearInterval(typer); return; }
+        try { fs.appendFileSync(feed, '\r'); } catch { /* gone */ }
+      }, 4000);
+      typer.unref();
+    }
     // Stop only the claude process and let it shut down the way Ctrl+C does: a server gives its sessions
     // time to finish and keeps its environment, so the next server reconnects them. Signalling the whole
     // group instead would end every session underneath it at once. launchd (or the app's detached spawn)
@@ -267,7 +290,55 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
 
   // `session` is claude.ai's record of the session being viewed. Returns { sessionId } to show instead,
   // or { skipped } with the reason it was left alone. Waits up to a minute for a new continuation.
-  async function continueSession(profileIds, session) {
+  // Older CLIs named a Remote Control session's transcript at random, so it is found by content: a
+  // message's own "uuid" field, which claude.ai's event log for the session carries too. Matching the
+  // field (not just the ID) skips transcripts that merely mention it.
+  // A project folder can hold gigabytes of transcripts, so only files created within a day of the
+  // session's start and still written after it are searched.
+  async function findByMessage(folders, configDirs, messageIds, startedAt) {
+    const start = Date.parse(startedAt) || 0;
+    const args = ['-l', '-F', ...messageIds.flatMap((m) => ['-e', `"uuid":"${m}"`])];
+    for (const folder of folders) {
+      const files = [];
+      for (const d of configDirs.map((c) => path.join(c, 'projects', slug(folder)))) {
+        let names;
+        try { names = fs.readdirSync(d).filter((n) => n.endsWith('.jsonl')); } catch { continue; }
+        for (const n of names) {
+          try {
+            const st = fs.statSync(path.join(d, n));
+            if (Math.abs(st.birthtimeMs - start) <= 86400000 && st.mtimeMs >= start) files.push(path.join(d, n));
+          } catch { /* gone */ }
+        }
+      }
+      for (let i = 0; i < files.length; i += 200) {
+        try {
+          const { stdout } = await run('grep', [...args, ...files.slice(i, i + 200)], { maxBuffer: 16 * 1024 * 1024, timeout: 60000 });
+          const file = stdout.split('\n').find(Boolean);
+          if (file) return { folder, file };
+        } catch { /* grep exits 1 when nothing matches */ }
+      }
+    }
+    return null;
+  }
+
+  // A continuation runs the interactive CLI, which opens on its first-run screens (theme, welcome) in a
+  // Claude config that has only ever run Remote Control, and waits there for a key nobody presses.
+  // Mark onboarding done, as clicking through it once would; the file is backed up first.
+  function markOnboarded(cfgDir) {
+    const file = path.join(cfgDir, '.claude.json');
+    const j = readJson(file, null);
+    if (!j || j.hasCompletedOnboarding) return;
+    fs.copyFileSync(file, `${file}.before-onboarding-${Date.now()}`);
+    const latest = readJson(file, j); // re-read just before writing: the CLI rewrites this file too
+    latest.hasCompletedOnboarding = true;
+    latest.lastOnboardingVersion ||= latest.lastReleaseNotesSeen || '2.0.0';
+    fs.writeFileSync(`${file}.tmp-profiles`, JSON.stringify(latest, null, 2));
+    fs.renameSync(`${file}.tmp-profiles`, file);
+    log(`marked Claude Code onboarding done in ${cfgDir}, so a continued session can start`);
+  }
+
+  // `messageIds` (optional) returns IDs of the session's messages, from claude.ai's event log.
+  async function continueSession(profileIds, session, { messageIds } = {}) {
     const id = cseOf(session.id);
     const skip = (reason) => ({ skipped: reason });
     if (session.environment_kind !== 'bridge') return skip('not a Remote Control session');
@@ -279,9 +350,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     if (!servers.length) return skip('this profile has no servers');
     // Still in a running server's environment: that server serves it again on the next message.
     if (session.environment_id && servers.some((s) => currentEnvironment(s) === session.environment_id)) return skip('its server is running');
-    // A continuation has no environment of its own; one that stopped is carried on from its transcript.
-    if (!session.environment_id && !map[id]) return skip('a terminal session, not one this app continued');
-    const transcript = map[id]?.transcript || transcriptOf(id);
+    let transcript = map[id]?.transcript || transcriptOf(id);
     if (continuationRunning(transcript)) return skip('already being continued');
     // The transcript sits under whichever Claude config ran the session; resume it under this profile's.
     const configDirs = [...new Set([...config().servers.map((s) => s.configDir), path.join(HOME, '.claude')])];
@@ -293,6 +362,15 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
       }
       if (found) break;
     }
+    if (!found && messageIds) {
+      const ids = (await messageIds().catch(() => [])).filter((m) => /^[0-9a-f-]{36}$/.test(m)).slice(0, 8);
+      const hit = ids.length ? await findByMessage([...new Set(servers.map((s) => s.folder))], configDirs, ids, session.created_at) : null;
+      if (hit) {
+        transcript = path.basename(hit.file, '.jsonl');
+        if (continuationRunning(transcript)) return skip('already being continued');
+        found = { s: servers.find((s) => s.folder === hit.folder), file: hit.file };
+      }
+    }
     if (!found) return skip('its transcript is not on this Mac');
     const { s } = found;
     const target = path.join(s.configDir, 'projects', slug(s.folder), `${transcript}.jsonl`);
@@ -302,6 +380,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
       const side = found.file.replace(/\.jsonl$/, '');
       if (fs.existsSync(side)) fs.cpSync(side, target.replace(/\.jsonl$/, ''), { recursive: true, force: false });
     }
+    markOnboarded(s.configDir);
     // Detached, so it outlives the app the way the launchd servers do.
     fs.mkdirSync(logsDir, { recursive: true });
     const err = fs.openSync(path.join(logsDir, 'continued.err'), 'a');

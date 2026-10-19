@@ -261,7 +261,16 @@ async function continueIfStranded(contents, p) {
     });
     const record = r.ok ? ((await r.json()).data || []).find((x) => x.id === id) : null;
     if (!record) return;
-    const result = await mgr.continueSession([p.id, signInId(p)], record);
+    // IDs of the session's latest messages, to find a transcript the CLI did not name after the session.
+    const messageIds = async () => {
+      const e = await session.fromPartition(`persist:profile-${signInId(p)}`).fetch(`https://claude.ai/v1/code/sessions/session_${m[1]}/events?limit=50&sort_order=desc`, {
+        credentials: 'include',
+        headers: { 'anthropic-version': '2023-06-01', 'anthropic-client-platform': 'web_claude_ai' },
+      });
+      if (!e.ok) return [];
+      return ((await e.json()).data || []).filter((x) => x.event_type === 'user' || x.event_type === 'assistant').map((x) => x.payload?.uuid).filter(Boolean);
+    };
+    const result = await mgr.continueSession([p.id, signInId(p)], record, { messageIds });
     if (!result.sessionId) return;
     console.log(`[continue] ${id} -> ${result.sessionId}`);
     // Only move the view if it is still on the stranded session.
