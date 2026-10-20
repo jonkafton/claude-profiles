@@ -16,7 +16,7 @@ const expand = (p) => (p && p.startsWith('~') ? path.join(HOME, p.slice(1)) : p)
 const tilde = (p) => (p && p.startsWith(HOME + path.sep) ? `~${p.slice(HOME.length)}` : p);
 
 function slug(text, taken = new Set()) {
-  const base = String(text).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'profile';
+  const base = String(text).toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'profile';
   let id = base;
   for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
   return id;

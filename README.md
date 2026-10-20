@@ -20,6 +20,7 @@ Plenty of people have more than one Claude account on one Mac: a personal plan a
 - **Web apps don't fill the gap.** Safari web apps keep each login separate, but links from Claude either stay trapped inside the web app or are silently dropped instead of opening in your browser. Chrome merges every claude.ai install across all your Chrome profiles into one Dock app with a profile-switching menu, so you can't give each account its own app.
 - **Folders and accounts get crossed.** Nothing stops a project's Claude Code sessions from running under the wrong account.
 - **Claude Design is one more tab per account.** Designing for a client in their account and for yourself in yours means yet more browser windows with the same icon, each needing its own sign-in.
+- **Remote Control sessions can't reach Claude Design.** Opening a design link or running `/design-sync` needs a Claude Design authorization that only `/design-login` sets up, and `/design-login` runs only in an interactive terminal, not in a session you drive from claude.ai or your phone.
 
 Claude Profiles fixes all of these in one app.
 
@@ -37,10 +38,12 @@ Claude Profiles fixes all of these in one app.
 - **Stranded sessions come back when you open them.** Open a session no server can reach any more and the app carries it on as a new session with the whole conversation, then switches the view to it.
 - **See and clear sessions.** Every open session is listed by its title (the same one claude.ai's sidebar shows), with its last activity and memory, **End** to free it and **Keep** to protect it.
 - **Automatic cleanup (optional).** Once an hour, end sessions that have been idle for 3 hours or more.
+- **Claude Design for Claude Code sessions.** Authorize a profile's Claude Code sessions to open and update Claude Design projects from its setup checklist, with no terminal. Approve with the profile's own account or any other signed-in profile's; the step shows which account approved it, and **Re-authorize** switches account.
 - **MCP servers per account.** See each profile's MCP servers and claude.ai connectors, grouped by where they are configured. Sign in again to the ones that need it, under the right account, and add or remove servers, all from the Servers screen.
 - **Links behave.** Links to anything outside Claude open in your default browser. Claude links stay in the profile. Right-click any link for **Open Link in Browser** or **Copy Link**.
 - **Guard rails.** Warns when a profile's Claude Code login is a different account from the profile's, refuses to start a server in a folder Claude Code hasn't trusted, and can pin folders to accounts (for example, a client's folders may only run under that client's account).
 - **Status at a glance.** A dot on each profile's icon shows whether its servers are running, and a badge shows how many sessions are open.
+- **Pages that fail to load recover.** If a page can't load (the network dropped after sleep, say) or its page process stops, the profile shows why and keeps trying, instead of staying blank.
 
 ## Requirements
 
@@ -48,6 +51,7 @@ Claude Profiles fixes all of these in one app.
 - [Node.js](https://nodejs.org/) 20 or later, to build the app.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed, with `claude` on your shell's `PATH`, and a version that supports `claude remote-control`.
 - A Claude subscription for each account that includes Claude Code and Remote Control.
+- For Claude Design access from Claude Code, a Claude Code version with `claude design-login` (tested with 2.1.305).
 
 ## Install
 
@@ -76,6 +80,7 @@ When the app opens for the first time it shows the **Profiles** screen with a ne
 4. **Sign Claude Code in to the same account.** Press **Sign in in Terminal**. Terminal opens Claude Code with this profile's config folder. Choose the Claude account option. When Claude Code shows a sign-in link, copy it, switch to Claude Profiles with this profile selected and press **⇧⌘V**: the link opens inside the profile, so the right account approves it. Paste the code it gives you back into Terminal, then type `/exit`.
 5. **Trust each folder and allow Remote Control.** Press **Set up in Terminal** next to each folder. Answer `y` to "Trust this folder?" and to "Enable Remote Control?", wait for **Ready**, then press Ctrl+C.
 6. **Start the servers.** Press **Open Servers** and **Start** each folder's server.
+7. **Optional: let Claude Code use Claude Design.** Sessions that open a design link or run `/design-sync` need a Claude Design authorization of their own, which `/design-login` sets up. A Remote Control session can't run `/design-login`, so press **Authorize** instead. Choose the account whose design projects the sessions should reach: this profile's own, or any other signed-in profile's. The authorization is separate from the profile's Claude Code login, so it can be another account. Claude's approval page opens in a window on that account's sign-in. Check that it shows the right account, then press **Authorize** there; the window closes by itself. The step then shows which account approved it. To switch account, choose another and press **Re-authorize**: the new approval replaces the old one. The step is hidden for accounts that Claude Design isn't offered to. Claude Code notes that standalone Claude Design (claude.ai/design) closes by 14 December 2026.
 
 Now open the profile, start a new Claude Code session, and choose the environment named after your folder, shown as `<folder> · <your Mac's name>`. The same sessions are reachable from the Claude app on your phone or any browser signed in to that account.
 
@@ -215,7 +220,7 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 
 | What | Where |
 |---|---|
-| Profiles, icons, settings, logs | `~/Library/Application Support/Claude Profiles/` (`profiles.json`, `icons/`, `state/`, `logs/`) |
+| Profiles, icons, settings, logs | `~/Library/Application Support/Claude Profiles/` (`profiles.json`, `icons/`, `state/`, `logs/`). `state/design-approvals.json` records which account approved each profile's Claude Design access (an email address, never a token). |
 | Each profile's web sign-in | `~/Library/Application Support/Claude Profiles/Partitions/profile-<id>/` |
 | Server and cleanup jobs | `~/Library/LaunchAgents/io.github.jonkafton.claude-profiles.*.plist` |
 | Claude Code logins | each profile's `configDir`, for example `~/.claude-work` |
@@ -226,6 +231,9 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 
 - **"Couldn't sign you in. This browser or app may not be secure."** That is Google's block on embedded browsers. Sign in [by email](#signing-in-by-email).
 - **"There was an error verifying your code."** You pasted the sign-in link into the code box. Open the link to get the code, or copy the link and press ⇧⌘V.
+- **Claude Design was authorized with the wrong account.** On the Profiles screen, choose the right account in that profile's "Let Claude Code use Claude Design" step and press **Re-authorize**. The new approval replaces the old one. Claude Code has no command that removes only this authorization (`/logout` would also sign the profile's Claude Code out), so the app offers Re-authorize rather than Sign out.
+- **A session says Claude Design needs `/design-login`, or can't fetch a design file.** That profile's Claude Code hasn't authorized Claude Design. On the Profiles screen, press **Authorize** under "Let Claude Code use Claude Design" in that profile's setup, then ask the session to try again. If an authorized profile still gets "HTTP 403", the account itself may not have access to that design project.
+- **A profile shows "This page didn't load".** The page could not be reached, usually because the network dropped (waking from sleep, or a Wi-Fi or VPN change), or the page stopped unexpectedly. It tries again on its own, waiting longer after each failure, and straight away when the Mac comes back online. Press **Try Again** or ⌘R to try now. Each failure and its reason are written to `logs/manager.log`. Version 1.0.1 and earlier left the profile blank instead, until it was reloaded by hand.
 - **"<folder> · <your Mac> is offline" in a session.** The session is pointed at a folder whose server is stopped, or at an old environment. Start the server on the Servers screen, or pick another environment under the message box. Versions before 1.0.1 could start a restarted server before the old one had exited, which gave it a new environment and left the old sessions on one nothing serves. Open one in its profile and the app carries it on as a new session; see [Restarts and stranded sessions](#restarts-and-stranded-sessions).
 - **A server shows "Problem: folder not trusted for this profile".** Run step 5 of [Setting up a profile](#setting-up-a-profile) for that folder.
 - **"This profile expects A, but its Claude config is signed in as B".** Sessions would land in the wrong account. Run `/logout` in Claude Code with that config, then sign in again (step 4).
@@ -241,6 +249,8 @@ Everything the Profiles screen does is saved to `profiles.json` in the app's dat
 - **Servers** are launchd agents that run the app's own binary in Node mode (`ELECTRON_RUN_AS_NODE`) with `helper.js serve <key>`. The helper starts `claude remote-control` in the folder under the profile's `CLAUDE_CONFIG_DIR`, inside `script(1)` because `remote-control` needs a terminal. Each server's sessions are titled with its key so the app can tell its servers from hand-started ones.
 - **Status** comes from `ps` and `lsof`: servers are `claude remote-control` processes, sessions are their children.
 - **Cleanup** compares each session's CPU time between hourly runs and ends idle ones with `SIGKILL`.
+- **Claude Design access** runs `claude design-login --json`, the form of `/design-login` that Claude Code provides for the VS Code extension. It prints the approval link as JSON instead of opening a browser, so the app opens it in a window on the chosen profile's sign-in, then waits for the CLI to report the result. `--status` reports whether a profile is authorized. Claude Code saves the credential under the profile's `CLAUDE_CONFIG_DIR`.
+- **Pages that fail to load:** Electron shows nothing when a page fails to load or its renderer stops. The app replaces it with a small local page that names the error and retries the same address after 2, 5, 15, 30 and 60 seconds, then every 5 minutes, and at once when the Mac comes back online.
 - **MCP connections** come from `claude mcp list`, run in the folder under the profile's `CLAUDE_CONFIG_DIR`. **Sign in** runs `claude mcp login <name> --no-browser` the same way, inside `script(1)` because the CLI wants a terminal, reads the link it prints, and opens it.
 
 ## Privacy and security
@@ -266,6 +276,7 @@ The launchd jobs that keep servers and cleanup running while the app is closed o
   - Continuing a stranded session copies its transcript into the profile's config folder when it sits under another one.
   - Before the first continuation in a config folder that has only ever run Remote Control, the app marks Claude Code's onboarding as done in `.claude.json` (`hasCompletedOnboarding`), after saving a copy as `.claude.json.before-onboarding-<time>`. While a continuation starts, it presses Enter on any first-run screen.
   - When you ask, through the CLI: **Add server** and **Remove** (`claude mcp add-json`, `claude mcp remove`) write `.claude.json` or the folder's `.mcp.json`, and **Sign in** (`claude mcp login`) saves the server's token wherever Claude Code keeps it.
+  - When you press **Authorize** for Claude Design, the app runs `claude design-login --json`, the form of `/design-login` that Claude Code provides for the VS Code extension. Claude Code saves the Claude Design authorization in its secure storage for that config folder.
 - **Terminal**: setup buttons and **Open in Terminal** open a Terminal window with the command, through AppleScript. If macOS does not allow that, the command is copied to your clipboard instead.
 
 ### What it reads
@@ -274,12 +285,14 @@ The launchd jobs that keep servers and cleanup running while the app is closed o
 - Files Claude Code keeps in each config folder: `bridge-pointer.json` (a folder's environment), `sessions/<pid>.json` (which claude.ai session a process opened), and transcripts, which it searches for message IDs only to find an older stranded session's transcript.
 - Processes: `ps` and `lsof` list `claude` processes, their working folders, and the `CLAUDE_CONFIG_DIR` in their environment.
 - Whether a profile's storage holds claude.ai's sign-in cookie, to show setup progress. It never reads the cookie's value.
+- Whether each Claude Code profile has authorized Claude Design, by running `claude design-login --json --status` with its config folder while the Profiles screen is open, at most every five minutes. The CLI reports yes or no; the app never reads the credential.
 
 ### The embedded browser
 
 - Profile pages run sandboxed, with no access to the app or your files.
 - They identify as the Chrome version the app embeds, because some sign-in pages refuse a browser that names Electron. Google and Apple refuse it anyway.
 - Web permissions are limited to notifications, clipboard, fullscreen, and camera and microphone, which are granted together (claude.ai uses the microphone for voice input).
+- A page that fails to load, or whose page process stops, is replaced by a short local error page that retries the same address. Electron, unlike Chrome, would otherwise show nothing at all.
 
 ## Uninstall
 
@@ -294,7 +307,10 @@ The launchd jobs that keep servers and cleanup running while the app is closed o
 npm install
 npm start           # run from source
 npm run package     # build and install ~/Applications/Claude Profiles.app
+npm test            # run the unit tests
 ```
+
+The tests use Node's built-in test runner (Node 22 or later) and need no other dependencies. They run against fakes of Electron, `child_process` and launchd, with `HOME` pointed at a temporary folder, so they never start a server, load a launch agent or touch your profiles, sign-ins or real processes. `test/helpers/` holds the fakes. A test marked `todo` records a known defect: it is reported, but does not fail the run.
 
 Servers started from a source run point at the development copy of Electron, so start your real servers from the installed app. Environment variables for testing:
 

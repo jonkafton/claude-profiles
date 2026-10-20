@@ -23,7 +23,7 @@ const [built] = await packager({
   // launchd runs helper.js with the app's binary as plain Node, so it and its module live outside the archive.
   asar: { unpack: '{helper,manager,profiles}.js' },
   // User data lives in ~/Library/Application Support/Claude Profiles, never in the bundle.
-  ignore: [/^\/(dist|build|icons|state|logs|docs|\.git)($|\/)/, /^\/(profiles|profiles\.example)\.json$/, /^\/build\.mjs$/, /^\/(README\.md|LICENSE|\.gitignore)$/],
+  ignore: [/^\/(dist|build|icons|state|logs|docs|test|\.git)($|\/)/, /^\/(profiles|profiles\.example)\.json$/, /^\/build\.mjs$/, /^\/(README\.md|LICENSE|\.gitignore)$/],
 });
 const app = path.join(built, 'Claude Profiles.app');
 

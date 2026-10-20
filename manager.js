@@ -19,7 +19,7 @@ const CLEANUP_DEFAULTS = { idleHours: 3, idleCpuPerHour: 30, includeDesktop: fal
 // How long a stopping server gets to shut down cleanly. remote-control gives its sessions 30s to finish.
 const SHUTDOWN_GRACE_S = 45;
 
-const { expand, readRaw } = require('./profiles');
+const { expand, tilde, readRaw } = require('./profiles');
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -427,6 +427,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   // servers from the profile's .claude.json, the folder's .mcp.json, and the account's claude.ai connectors.
   // It health-checks every server (starting the stdio ones), so it runs when asked, not on each status poll.
   const MCP_LOGIN_TIMEOUT_MS = 10 * 60000;
+  const DESIGN_LOGIN_TIMEOUT_MS = 6 * 60000;
   const plainText = (s) => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
   function mcpTarget(key) {
     const s = config().servers.find((x) => x.key === key);
@@ -595,6 +596,62 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return { done, cancel: () => end('cancelled'), url: () => url };
   }
 
+  // ---- Claude Design access --------------------------------------------------------------------
+  // Sessions reach Claude Design projects (/design-sync, design links) with an authorization of their own,
+  // which /design-login saves in the config's secure storage. A Remote Control session can't run
+  // /design-login, so the app runs the CLI's JSON form of it, made for the VS Code extension. It refuses a
+  // terminal on stdin and a parent Claude Code session (claudeEnv drops those markers), never opens a
+  // browser itself, and prints JSON lines: { event: 'pages', url } with the approval link, then
+  // { event: 'done', ok, message }. Closing its stdin cancels the sign-in.
+  async function designStatus(cfgDir) {
+    const { claude, env } = await claudeEnv(cfgDir);
+    if (!claude) throw new Error('claude not found on PATH');
+    const { stdout } = await run(claude, ['design-login', '--json', '--status'], { env, timeout: 30000 });
+    const status = JSON.parse(stdout.trim().split('\n').pop() || 'null');
+    if (!status || typeof status !== 'object') throw new Error('claude design-login printed no status');
+    return status;
+  }
+  // Returns { done, cancel }: onUrl gets the approval link, done resolves with { ok, message }.
+  async function designLogin(cfgDir, onUrl) {
+    const { claude, env } = await claudeEnv(cfgDir);
+    if (!claude) throw new Error('claude not found on PATH');
+    const child = spawn(claude, ['design-login', '--json'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const who = tilde(cfgDir);
+    let lines = '';
+    let errors = '';
+    let result = null;
+    child.stdout.on('data', (chunk) => {
+      lines += chunk;
+      for (let i = lines.indexOf('\n'); i >= 0; i = lines.indexOf('\n')) {
+        const line = lines.slice(0, i).trim();
+        lines = lines.slice(i + 1);
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        if (event?.event === 'pages' && typeof event.url === 'string') {
+          try { onUrl?.(event.url); } catch (e) { log(`design login for ${who}: ${e.message}`); }
+        }
+        if (event?.event === 'done') result = { ok: event.ok === true, message: String(event.message || '') };
+      }
+    });
+    child.stderr.on('data', (chunk) => { errors += chunk; });
+    let finish;
+    const done = new Promise((r) => { finish = r; });
+    let ended = false;
+    const end = (r) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(timer);
+      log(`design login for ${who}: ${r.ok ? 'authorized' : r.message}`);
+      finish(r);
+    };
+    child.on('error', (e) => end({ ok: false, message: e.message }));
+    child.on('close', (code) => end(result || { ok: false, message: errors.trim().split('\n').pop() || `claude design-login exited with ${code}` }));
+    // The CLI gives up after five minutes on its own; this only catches one that never exits.
+    const timer = setTimeout(() => { try { child.kill('SIGTERM'); } catch { /* gone */ } end({ ok: false, message: 'The sign-in did not finish.' }); }, DESIGN_LOGIN_TIMEOUT_MS);
+    log(`design login for ${who}: started`);
+    return { done, cancel: () => { try { child.stdin.end(); } catch { /* gone */ } } };
+  }
+
   // ---- process snapshot ------------------------------------------------------------------------
   async function snapshot() {
     const { stdout } = await run('ps', ['-axo', 'pid=,ppid=,rss=,time=,command='], { maxBuffer: 64 * 1024 * 1024 });
@@ -757,7 +814,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return { checked: sessions.length, ended };
   }
 
-  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig, mcpTarget, mcpList, mcpLogin, mcpAdd, mcpRemove, parseMcpList, shellWords };
+  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig, mcpTarget, mcpList, mcpLogin, mcpAdd, mcpRemove, designStatus, designLogin, parseMcpList, shellWords };
 }
 
 module.exports = { createManager };

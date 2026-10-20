@@ -137,6 +137,79 @@ function guardContents(contents) {
   });
 }
 
+// Electron draws nothing when a page fails to load or its renderer stops: no error page and, unlike Chrome,
+// no retry. A profile first opened while the network was briefly down (waking from sleep, a Wi-Fi or VPN
+// change) stayed blank until reloaded by hand. Say why, log it, and keep trying until it loads.
+const RETRY_SECONDS = [2, 5, 15, 30, 60, 300];
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function failurePage(url, reason, wait) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>This page didn't load</title>
+<style>
+  :root { --bg: #f5f4ef; --card: #fffefb; --ink: #2f2c24; --muted: #7d786a; --line: #e4e1d6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #262522; --card: #2e2d2a; --ink: #ece9df; --muted: #9a9587; --line: #3c3a35; } }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink); font: 13px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; }
+  main { max-width: 460px; padding: 24px; }
+  h1 { font: 600 20px/1.25 ui-serif, Georgia, serif; margin: 0 0 10px; }
+  p { margin: 0 0 6px; color: var(--muted); overflow-wrap: anywhere; }
+  button { font: inherit; margin-top: 10px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+</style></head><body><main>
+<h1>This page didn't load</h1>
+<p>${escapeHtml(url)}</p>
+<p>${escapeHtml(reason)}</p>
+<p id="next"></p>
+<button id="retry">Try Again</button>
+</main><script>
+  const target = ${JSON.stringify(url).replace(/</g, '\\u003c')};
+  let left = ${wait};
+  const go = () => location.replace(target);
+  const next = document.getElementById('next');
+  const tick = () => {
+    if (!navigator.onLine) { next.textContent = 'Trying again when this Mac is back online.'; setTimeout(tick, 1000); return; }
+    if (left <= 0) { go(); return; }
+    next.textContent = 'Trying again in ' + left + (left === 1 ? ' second.' : ' seconds.');
+    left--;
+    setTimeout(tick, 1000);
+  };
+  addEventListener('online', go);
+  document.getElementById('retry').addEventListener('click', go);
+  // Reloading this page (⌘R) means "try now".
+  if (performance.getEntriesByType('navigation')[0]?.type === 'reload') go(); else tick();
+</script></body></html>`;
+}
+
+function recoverFailedLoads(contents, p) {
+  let failures = 0;
+  // Once a page is showing, an abandoned navigation leaves it in place rather than a blank view.
+  let shown = false;
+  const recover = (url, reason) => {
+    if (app.isQuitting || contents.isDestroyed() || !isWeb(url)) return;
+    const wait = RETRY_SECONDS[Math.min(failures++, RETRY_SECONDS.length - 1)];
+    shown = false;
+    mgr.log(`${p.name}: ${url} did not load (${reason}), trying again in ${wait}s`);
+    contents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(failurePage(url, reason, wait))}`);
+  };
+  // Only did-navigate means a page really loaded: Electron also fires did-finish-load for its own blank
+  // error page, straight after did-fail-load and still reporting the failed address.
+  contents.on('did-navigate', (_e, url) => { if (isWeb(url)) { shown = true; failures = 0; } });
+  contents.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
+    if (!isMainFrame) return;
+    const reason = `${description} (${code})`;
+    // -3 (ERR_ABORTED) is normally a newer navigation taking over. It only leaves the view blank when
+    // nothing has been shown yet and nothing else is loading.
+    if (code === -3) {
+      setTimeout(() => { if (!shown && !contents.isDestroyed() && !contents.isLoading()) recover(url, reason); }, 1000);
+      return;
+    }
+    recover(url, reason);
+  });
+  contents.on('render-process-gone', (_e, details) => {
+    if (details.reason !== 'clean-exit') recover(contents.getURL(), `the page stopped: ${details.reason}`);
+  });
+}
+
 function profileSession(p) {
   const sid = signInId(p);
   const ses = session.fromPartition(`persist:profile-${sid}`);
@@ -174,6 +247,7 @@ function viewFor(w, id) {
     webPreferences: { session: profileSession(p), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: true },
   });
   guardContents(view.webContents);
+  recoverFailedLoads(view.webContents, p);
   view.webContents.on('page-title-updated', () => { if (w.activeId === p.id) updateTitle(w); });
   view.webContents.on('did-navigate', () => continueIfStranded(view.webContents, p));
   view.webContents.on('did-navigate-in-page', () => continueIfStranded(view.webContents, p));
@@ -538,7 +612,7 @@ ipcMain.handle('mgr', async (event, action, ...args) => {
     openConfig: () => select(fromPanel(event, SERVERS), PROFILES),
     packaged: () => app.isPackaged,
   };
-  if (!actions[action]) throw new Error(`unknown action ${action}`);
+  if (!Object.hasOwn(actions, action)) throw new Error(`unknown action ${action}`);
   const result = await actions[action](...args);
   if (action !== 'status' && action !== 'packaged') setTimeout(pushStatus, 1500);
   if (action === 'start' || action === 'restart') setTimeout(retireStaleEnvironments, 60000);
@@ -758,9 +832,75 @@ async function describeProfiles() {
       id: p.id, kind: p.kind || 'code', name: p.name, account: p.account || '', url: p.url || (P.KINDS[p.kind] || P.KINDS.code).url, configDir: p.configDir || '', icon: iconData(p),
       shareSignIn: p.shareSignIn || null, shareName: p.shareSignIn ? raw.profiles.find((x) => x.id === p.shareSignIn)?.name || null : null,
       webSignedIn: await webSignedIn(p.shareSignIn || p.id), cliAccount: cli.account, remoteAccepted: cli.remoteAccepted,
+      design: cfg && (p.kind || 'code') === 'code' ? withApprover(designAccess(cfg), cfg) : null,
       folders: (p.servers || []).map((s) => ({ folder: P.expand(s.folder), display: s.folder, key: `${p.id}-${s.id}`, trusted: cfg ? mgr.claudeConfig(cfg, P.expand(s.folder)).trusted : false })),
     };
   }));
+}
+
+// ---- Claude Design access ----------------------------------------------------------------------------
+// Claude Code sessions reach Claude Design projects with an authorization of their own, saved under the
+// profile's Claude config (manager.designLogin). The approval page opens in a window on the profile's own
+// sign-in, so the profile's account approves it, not whichever account the default browser is signed in to.
+// The Profiles screen polls every few seconds and each check starts the CLI, so a check's result is kept
+// for a few minutes, and the list shows "checking" until the first one is back.
+const DESIGN_RECHECK_MS = 5 * 60000;
+const designChecks = new Map(); // config folder -> { at, status, pending }
+function designAccess(cfg) {
+  const known = designChecks.get(cfg) || {};
+  if (!known.pending && (!known.at || Date.now() - known.at > DESIGN_RECHECK_MS)) recheckDesign(cfg);
+  return known.status || null;
+}
+function recheckDesign(cfg) {
+  const known = designChecks.get(cfg) || {};
+  const pending = Promise.resolve()
+    .then(() => mgr.designStatus(cfg))
+    .then((status) => status, (e) => ({ error: e.message }))
+    .then((status) => { designChecks.set(cfg, { at: Date.now(), status }); return status; });
+  designChecks.set(cfg, { ...known, pending });
+  return pending;
+}
+
+// The CLI reports only whether a credential is stored, not whose it is, so the app remembers which account
+// approved its own sign-ins. A sign-in done elsewhere (/design-login in Terminal) shows no account.
+const designApprovalsFile = () => path.join(CONFIG_DIR, 'state', 'design-approvals.json');
+function withApprover(status, cfg) {
+  const account = status?.signed_in ? readJsonFile(designApprovalsFile(), {})[cfg]?.account : null;
+  return account ? { ...status, approvedAs: account } : status;
+}
+
+const designLogins = new Map(); // profile id -> the running sign-in
+// Any profile's sign-in may approve: the credential is separate from the profile's Claude Code login, so a
+// profile's sessions can use another account's Claude Design projects. Signing in again replaces it, which
+// is also the way out of one approved with the wrong account.
+async function designSignIn(id, approverId) {
+  const p = profile(id);
+  if (!p || p.kind === 'design' || !p.configDir) throw new Error('Only a Claude Code profile can authorize Claude Design.');
+  const approver = profile(approverId || id);
+  if (!approver) throw new Error('That sign-in is no longer in the app.');
+  designLogins.get(id)?.cancel();
+  const cfg = P.expand(p.configDir);
+  let win = null;
+  let login = null;
+  login = await mgr.designLogin(cfg, (url) => {
+    win = connectorWindow(approver, 'Claude Design', url);
+    // Closing the window before approving cancels the sign-in.
+    win.on('closed', () => login?.cancel());
+  });
+  designLogins.set(id, login);
+  try {
+    const result = await login.done;
+    if (win && !win.isDestroyed()) win.close();
+    if (result.ok) {
+      const approvals = readJsonFile(designApprovalsFile(), {});
+      approvals[cfg] = { account: approver.account || approver.name, profile: approver.id, at: new Date().toISOString() };
+      writeJsonFile(designApprovalsFile(), approvals);
+    }
+    await recheckDesign(cfg);
+    return result;
+  } finally {
+    if (designLogins.get(id) === login) designLogins.delete(id);
+  }
 }
 
 // Optional custom marks: marks/<kind>.svg in the data folder replaces the built-in mark for that profile type.
@@ -829,10 +969,11 @@ ipcMain.handle('editor', async (event, action, ...args) => {
       const p = (await describeProfiles()).find((x) => x.id === id);
       return runInTerminal(`cd ${shq(folder)} && CLAUDE_CONFIG_DIR=${shq(P.expand(p.configDir))} claude remote-control`);
     },
+    designLogin: (id, approverId) => designSignIn(id, approverId),
     openProfile: (id) => select(w, id),
     openServers: () => select(w, SERVERS),
   };
-  if (!actions[action]) throw new Error(`unknown action ${action}`);
+  if (!Object.hasOwn(actions, action)) throw new Error(`unknown action ${action}`);
   return actions[action](...args);
 });
 

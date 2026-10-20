@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('editor', {
   remove: (id) => call('remove', id),
   cliLogin: (id) => call('cliLogin', id),
   trustFolder: (id, folder) => call('trustFolder', id, folder),
+  designLogin: (id, approverId) => call('designLogin', id, approverId),
   openProfile: (id) => call('openProfile', id),
   openServers: () => call('openServers'),
   onNew: (fn) => ipcRenderer.on('editor-new', () => fn()),

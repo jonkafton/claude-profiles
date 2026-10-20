@@ -53,6 +53,7 @@
   .kind.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .kind .hint { margin: 0; }
   select { width: 100%; font: inherit; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--field); color: var(--ink); }
+  select.approver { width: auto; max-width: 260px; font-size: 12px; padding: 4px 6px; border-radius: 6px; }
   .swatches { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .swatch { width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; padding: 0; }
   .swatch:hover, .swatch:focus-visible { border-color: var(--ink); }
@@ -267,7 +268,54 @@
           h('div', {}, h('div', { class: 'folder' }, tilde(f.folder)), h('div', { class: 'hint' }, f.trusted && p.remoteAccepted ? 'Ready.' : 'Opens Terminal in this folder. Answer y to “Trust this folder?” and to “Enable Remote Control?”, wait for “Ready”, then press Ctrl+C.')),
           h('div', { class: 'row' }, f.trusted && p.remoteAccepted ? null : h('button', { onclick: () => window.editor.trustFolder(p.id, f.folder).then(terminalResult) }, 'Set up in Terminal')))),
         step(false, false, 'Start the server', 'On the Servers screen, press Start for each folder. Servers keep running when the app is closed, so you can reach these sessions from your phone or any browser.',
-          h('button', { onclick: () => window.editor.openServers() }, 'Open Servers'))));
+          h('button', { onclick: () => window.editor.openServers() }, 'Open Servers')),
+        designStep(p)));
+  }
+  // Optional: lets the profile's Claude Code sessions open and update Claude Design projects. A Remote Control
+  // session can't run /design-login itself, so the app runs it and shows the approval page in a window.
+  const authorizing = new Set(); // profile ids with a sign-in under way
+  const approverFor = new Map(); // profile id -> id of the profile whose sign-in approves, as last chosen
+  // The credential is separate from the profile's Claude Code login, so any signed-in profile can approve:
+  // its account's design projects are the ones the sessions reach. This profile's own sign-in comes first.
+  function approvers(p) {
+    const own = p.shareSignIn || p.id;
+    const seen = new Set();
+    return [profilesList.find((x) => x.id === own) || p, ...profilesList.filter((x) => !x.shareSignIn && x.webSignedIn && x.id !== own)]
+      .filter((x) => { const k = (x.account || x.id).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  }
+  const accountOf = (x) => x.account || x.name;
+  function designStep(p) {
+    const d = p.design;
+    if (d && d.available === false) return null; // Claude Design isn't offered to this account
+    const ok = d?.signed_in === true;
+    const options = approvers(p);
+    const chosen = () => options.find((x) => x.id === approverFor.get(p.id)) || options[0];
+    const detail = !d ? 'Checking…'
+      : d.error ? `Could not check: ${d.error}`
+      : ok ? `Authorized${d.approvedAs ? ` as ${d.approvedAs}` : ''}. Sessions in this profile can open and update ${d.approvedAs ? 'that account’s' : 'your'} Claude Design projects. To switch account, choose another and press Re-authorize: the new approval replaces this one.`
+      : d.can_sign_in_here === false ? d.reason || 'This version of Claude Code cannot authorize Claude Design.'
+      : 'Optional. Lets this profile’s Claude Code sessions open and update Claude Design projects (design links, /design-sync), which a Remote Control session can’t authorize itself. Choose the account whose projects they should reach, press Authorize, and approve in the window that opens.';
+    const busy = authorizing.has(p.id);
+    const canAct = d && !d.error && d.can_sign_in_here !== false;
+    const picker = canAct && options.length > 1
+      ? h('select', { class: 'approver', 'aria-label': 'Approve as', disabled: busy, onchange: (e) => approverFor.set(p.id, e.target.value) },
+        ...options.map((x) => h('option', { value: x.id, selected: x.id === chosen().id }, `as ${accountOf(x)}`)))
+      : null;
+    const button = canAct
+      ? h('button', { disabled: busy, onclick: () => authorizeDesign(p, chosen()) }, busy ? 'Waiting for approval…' : ok ? 'Re-authorize' : 'Authorize')
+      : null;
+    return step(ok, false, 'Let Claude Code use Claude Design', detail, picker, button);
+  }
+  async function authorizeDesign(p, approver) {
+    authorizing.add(p.id);
+    renderList();
+    toast(`Approve in the window that opened: check it shows ${accountOf(approver)}. It closes by itself when done.`);
+    try {
+      const r = await window.editor.designLogin(p.id, approver.id);
+      toast(r.ok ? `Claude Design authorized for ${p.name} as ${accountOf(approver)}.` : r.message || 'The sign-in did not finish.');
+    } catch (e) { toast(errText(e)); }
+    authorizing.delete(p.id);
+    refresh();
   }
 
   async function refresh(highlight) {
