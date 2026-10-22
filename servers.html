@@ -104,7 +104,7 @@
         h('td', {}, idle(s)),
         h('td', {}, `${s.rssMB} MB`),
         h('td', {}, h('input', { type: 'checkbox', checked: s.kept, title: 'Never end this session automatically', onchange: (e) => act(() => window.mgr.keep(s.sessionId || s.pid, e.target.checked)) })),
-        h('td', {}, h('button', { class: 'danger', onclick: () => confirm(`End session “${s.title || short(s.sessionId)}”? Its process stops and its memory is freed.`) && act(() => window.mgr.endSession(s.pid), 'Session ended') }, 'End')))));
+        h('td', {}, h('button', { class: 'danger', title: 'Stop its process and free its memory. It stays in your claude.ai history.', onclick: () => act(() => window.mgr.endSession(s.pid), 'Session ended') }, 'End')))));
   }
 
   function serverBlock(s) {

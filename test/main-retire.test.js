@@ -166,7 +166,8 @@ describe('retiring stale Remote Control environments', () => {
   });
   test('runs a minute after launch, every 30 minutes, and a minute after a server starts', async (t) => {
     const { h, run } = await setup(t);
-    const lists = () => fe.state.fetches.filter((f) => f.url === `${ENVS}?limit=1000`).length;
+    // The make-room pass lists environments too, then lists sessions: count only this pass's lists.
+    const lists = () => fe.state.fetches.filter((f) => f.url === `${ENVS}?limit=1000`).length - fe.state.fetches.filter((f) => f.url.startsWith('https://claude.ai/v1/code/sessions?statuses=')).length;
     await run();
     assert.equal(lists(), 1);
     t.mock.timers.tick(30 * 60000 - 60000);

@@ -249,8 +249,9 @@ function viewFor(w, id) {
   guardContents(view.webContents);
   recoverFailedLoads(view.webContents, p);
   view.webContents.on('page-title-updated', () => { if (w.activeId === p.id) updateTitle(w); });
-  view.webContents.on('did-navigate', () => continueIfStranded(view.webContents, p));
-  view.webContents.on('did-navigate-in-page', () => continueIfStranded(view.webContents, p));
+  const onPage = () => { if (newSessionScreen(view.webContents.getURL())) requestRoom(); unarchiveIfOurs(view.webContents, p); continueIfStranded(view.webContents, p); };
+  view.webContents.on('did-navigate', onPage);
+  view.webContents.on('did-navigate-in-page', onPage);
   w.win.contentView.addChildView(view);
   w.views.set(p.id, view);
   layout(w);
@@ -316,7 +317,7 @@ function select(w, id) {
   if (w.win.isFocused()) syncDockIcon(w);
   w.sidebar.webContents.send('active', id);
   saveWindows();
-  if (profile(id)) continueIfStranded(view.webContents, profile(id));
+  if (profile(id)) { unarchiveIfOurs(view.webContents, profile(id)); continueIfStranded(view.webContents, profile(id)); }
 }
 
 // Opening a Remote Control session that no server can reach any more (its server restarted into a new
@@ -544,6 +545,7 @@ ipcMain.on('select', (event, id) => {
 
 // Server status for the sidebar badges: per profile, whether its servers run here, from a Terminal, or not at all.
 let lastStatus = null;
+let seenSessions = null; // session IDs at the last status, to notice new ones
 async function pushStatus(known) {
   try {
     const st = known || await mgr.status();
@@ -555,6 +557,10 @@ async function pushStatus(known) {
       if (s.pid) b.state = 'running';
       else if (s.terminal.length && b.state === 'stopped') b.state = 'terminal';
     }
+    // A session started since the last look: check the server still has room for the next one.
+    const ids = st.servers.flatMap((s) => s.sessions.map((x) => x.sessionId)).filter(Boolean);
+    if (seenSessions && ids.some((id) => !seenSessions.has(id))) requestRoom();
+    seenSessions = new Set(ids);
     lastStatus = byProfile;
     for (const w of windows.values()) if (!w.sidebar.webContents.isDestroyed()) w.sidebar.webContents.send('status', byProfile);
   } catch { /* status is best effort */ }
@@ -796,6 +802,131 @@ async function retireStaleEnvironments() {
   }
 }
 
+// claude.ai counts every session in a server's environment that is active or paused, ended or not,
+// against the server's limit (bridge_info.max_sessions), and blocks new sessions once it is reached.
+// Archiving is the only thing that frees a place; the session keeps its whole conversation. So when a
+// server comes within ROOM_LOW places of its limit, archive the ROOM_BATCH sessions that have been quiet
+// longest, never one still running on this Mac or marked Keep. Opening one unarchives it again
+// (unarchiveIfOurs), so the user never has to.
+const ROOM_LOW = 5;
+const ROOM_BATCH = 5;
+const roomFile = () => path.join(CONFIG_DIR, 'state', 'archived-sessions.json');
+const ccrHeaders = (org) => ({ 'anthropic-version': '2023-06-01', 'anthropic-beta': 'ccr-byoc-2025-07-29', 'anthropic-client-feature': 'ccr', 'x-organization-uuid': org });
+async function openSessions(ses, org) {
+  const all = [];
+  let after = null;
+  for (let page = 0; page < 20; page++) {
+    const r = await ses.fetch(`https://claude.ai/v1/code/sessions?statuses=active&statuses=paused&limit=100${after ? `&after_id=${encodeURIComponent(after)}` : ''}`, { credentials: 'include', headers: ccrHeaders(org) });
+    if (!r.ok) throw new Error(`listing sessions: ${r.status}`);
+    const body = await r.json();
+    all.push(...(body.data || []));
+    if (!body.has_more || !body.last_id) break;
+    after = body.last_id;
+  }
+  return all;
+}
+const quietSince = (s) => Date.parse(s.last_event_at || s.updated_at || s.created_at || '') || 0;
+async function makeRoom() {
+  let st;
+  try { st = await mgr.status(); } catch { return; }
+  const machine = require('node:os').hostname().replace(/\.local$/, '');
+  const headers = { 'anthropic-version': '2023-06-01', 'anthropic-client-platform': 'web_claude_ai' };
+  // Running here, or kept: never archived.
+  const live = new Set();
+  const kept = new Set();
+  for (const s of [...st.servers.flatMap((x) => [...x.sessions, ...x.terminal.flatMap((t) => t.sessions)]), ...st.unmanaged.flatMap((u) => u.sessions)]) {
+    if (s.sessionId) live.add(s.sessionId);
+    if (s.kept && s.sessionId) kept.add(s.sessionId);
+  }
+  for (const id of mgr.keptIds?.() || []) kept.add(id);
+  const freed = new Set(); // profiles where sessions were archived
+  for (const p of config.profiles.filter((x) => !x.shareSignIn)) {
+    const folders = new Set(st.servers.filter((s) => s.profileId === p.id && s.pid).map((s) => s.folder));
+    if (!folders.size) continue;
+    const ses = session.fromPartition(`persist:profile-${p.id}`);
+    try {
+      const orgs = await (await ses.fetch('https://claude.ai/api/organizations', { credentials: 'include' })).json();
+      for (const org of Array.isArray(orgs) ? orgs : []) {
+        const base = `https://claude.ai/v1/environment_providers/private/organizations/${org.uuid}/environments`;
+        const r = await ses.fetch(`${base}?limit=1000`, { credentials: 'include', headers });
+        if (!r.ok) continue;
+        const envs = ((await r.json()).environments || []).filter((e) => e.kind === 'bridge' && e.state === 'active' && e.bridge_info?.online && e.bridge_info.machine_name === machine && folders.has(e.bridge_info.directory));
+        if (!envs.length) continue;
+        const sessions = await openSessions(ses, org.uuid);
+        const record = readJsonFile(roomFile(), {});
+        for (const e of envs) {
+          const max = Number(e.bridge_info.max_sessions) || 32;
+          const here = sessions.filter((s) => s.environment_id === e.environment_id && s.session_status !== 'archived');
+          if (here.length < max - ROOM_LOW) continue;
+          const want = Math.max(ROOM_BATCH, here.length - (max - ROOM_LOW) + 1);
+          const candidates = here
+            .filter((s) => !live.has(s.id) && !kept.has(s.id) && !['running', 'requires_action'].includes(s.worker_status))
+            .sort((a, b) => quietSince(a) - quietSince(b))
+            .slice(0, want);
+          let done = 0;
+          for (const s of candidates) {
+            const a = await ses.fetch(`https://claude.ai/v1/code/sessions/${encodeURIComponent(s.id)}/archive`, { method: 'POST', credentials: 'include', headers: { ...ccrHeaders(org.uuid), 'content-type': 'application/json' }, body: '{}' });
+            if (a.ok || a.status === 409) { done++; record[s.id] = { profileId: p.id, org: org.uuid, environmentId: e.environment_id, folder: e.bridge_info.directory, title: s.title || null, at: new Date().toISOString() }; }
+            else mgr.log(`could not archive session ${s.id} (${a.status}) in ${p.name}`);
+          }
+          mgr.log(`${e.bridge_info.directory} in ${p.name} had ${here.length} of ${max} places used: archived ${done} quiet session${done === 1 ? '' : 's'}${done < want ? ` (only ${candidates.length} could be: the rest are running or kept)` : ''}`);
+          if (done) freed.add(p.id);
+        }
+        writeJsonFile(roomFile(), record);
+      }
+    } catch (e) { mgr.log(`making room in ${p.name}: ${e.message}`); }
+  }
+  // An open new-session screen still shows the old count, and blocks sending if it was full: reload it.
+  for (const win of windows.values()) {
+    for (const p of config.profiles.filter((x) => freed.has(signInId(x)))) {
+      const view = win.views.get(p.id);
+      if (view && !view.webContents.isDestroyed() && newSessionScreen(view.webContents.getURL())) view.webContents.reload();
+    }
+  }
+}
+
+// Runs makeRoom soon, at most once a minute, whatever asks for it: a timer, a new session starting, or
+// a profile opening claude.ai's new-session screen.
+let roomRunning = false;
+let roomLast = 0;
+let roomQueued = null;
+function requestRoom() {
+  if (roomQueued) return;
+  roomQueued = setTimeout(async () => {
+    roomQueued = null;
+    if (roomRunning) { requestRoom(); return; }
+    roomRunning = true;
+    roomLast = Date.now();
+    try { await makeRoom(); } finally { roomRunning = false; }
+  }, Math.max(0, roomLast + 60000 - Date.now()));
+}
+const newSessionScreen = (url) => /^https:\/\/claude\.ai\/code\/?(\?.*)?$/.test(url);
+
+// Opening a session the app archived to make room unarchives it, so it carries on like any other.
+const unarchiving = new Set();
+async function unarchiveIfOurs(contents, p) {
+  const m = contents.getURL().match(/^https:\/\/claude\.ai\/code\/(?:session_|cse_)([A-Za-z0-9]+)/);
+  if (!m) return;
+  const id = `cse_${m[1]}`;
+  const record = readJsonFile(roomFile(), {});
+  const r = record[id];
+  if (!r || r.profileId !== signInId(p) || unarchiving.has(id)) return;
+  unarchiving.add(id);
+  try {
+    const u = await session.fromPartition(`persist:profile-${signInId(p)}`).fetch(`https://claude.ai/v1/code/sessions/${encodeURIComponent(id)}/unarchive`, { method: 'POST', credentials: 'include', headers: { ...ccrHeaders(r.org), 'content-type': 'application/json' }, body: '{}' });
+    if (!u.ok && u.status !== 409) { mgr.log(`could not unarchive session ${id} (${u.status}) in ${p.name}`); return; }
+    const now = readJsonFile(roomFile(), {});
+    delete now[id];
+    writeJsonFile(roomFile(), now);
+    mgr.log(`unarchived session ${id} on opening it in ${p.name}`);
+    if (!contents.isDestroyed() && contents.getURL().includes(m[1])) contents.reload();
+  } catch (e) {
+    mgr.log(`unarchiving ${id}: ${e.message}`);
+  } finally {
+    unarchiving.delete(id);
+  }
+}
+
 // ---- Profiles screen -------------------------------------------------------------------------------
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -1002,6 +1133,8 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(pushStatus, 30000);
     setTimeout(retireStaleEnvironments, 60000);
     setInterval(retireStaleEnvironments, 30 * 60000);
+    setTimeout(requestRoom, 90000);
+    setInterval(requestRoom, 5 * 60000);
   });
   // Clicking the Dock icon with every window closed opens a fresh one.
   app.on('activate', () => { if (!windows.size) createWindow(); });

@@ -18,6 +18,11 @@ const LOG_LINES = 5000;
 const CLEANUP_DEFAULTS = { idleHours: 3, idleCpuPerHour: 30, includeDesktop: false };
 // How long a stopping server gets to shut down cleanly. remote-control gives its sessions 30s to finish.
 const SHUTDOWN_GRACE_S = 45;
+// claude.ai counts every session a server has served that is not archived against the server's
+// --capacity (default 32), so ending a session here frees its memory but not its place. Archiving would
+// free it, and also drop the session from claude.ai's history, so the app raises the limit instead.
+// profiles.json can set its own --capacity in a server's args.
+const DEFAULT_CAPACITY = 100;
 
 const { expand, tilde, readRaw } = require('./profiles');
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
@@ -192,6 +197,9 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
   async function serve(key) {
     const s = config().servers.find((x) => x.key === key);
     const args = [...(s?.args || [])];
+    // Single-session mode refuses --capacity.
+    const single = args.some((a, i) => a === '--spawn=session' || (a === '--spawn' && args[i + 1] === 'session'));
+    if (!single && !args.some((a) => a === '--capacity' || a.startsWith('--capacity='))) args.push('--capacity', String(DEFAULT_CAPACITY));
     if (!args.includes('--remote-control-session-name-prefix')) args.push('--remote-control-session-name-prefix', key);
     await runClaude(`serve ${key}`, s, ['remote-control', ...args]);
   }
@@ -768,6 +776,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     process.kill(pid, 'SIGTERM');
     log(`stopped unmanaged server pid=${pid}`);
   }
+  const keptIds = () => settings().keep.map(String);
   function setKeep(id, on) {
     const keep = new Set(settings().keep);
     if (on) keep.add(String(id)); else keep.delete(String(id));
@@ -814,7 +823,7 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     return { checked: sessions.length, ended };
   }
 
-  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, claudeConfig, mcpTarget, mcpList, mcpLogin, mcpAdd, mcpRemove, designStatus, designLogin, parseMcpList, shellWords };
+  return { log, config, status, startServer, stopServer, setCleanup, serve, continueRun, continueSession, reap, endSession, stopUnmanagedServer, setKeep, keptIds, claudeConfig, mcpTarget, mcpList, mcpLogin, mcpAdd, mcpRemove, designStatus, designLogin, parseMcpList, shellWords };
 }
 
 module.exports = { createManager };

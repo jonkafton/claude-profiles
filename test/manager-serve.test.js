@@ -74,7 +74,18 @@ describe('serve()', () => {
   test('keeps a session name prefix set in profiles.json', async () => {
     const { mgr, key } = oneServer({ args: ['--remote-control-session-name-prefix', 'mine'] });
     await mgr.serve(key);
-    assert.deepEqual(fake.state.spawned[0].args.slice(4), ['remote-control', '--remote-control-session-name-prefix', 'mine']);
+    assert.deepEqual(fake.state.spawned[0].args.slice(4), ['remote-control', '--remote-control-session-name-prefix', 'mine', '--capacity', '100']);
+  });
+  test('raises the session limit to 100 unless profiles.json sets one or the server is single-session', async () => {
+    const plain = oneServer();
+    await plain.mgr.serve(plain.key);
+    assert.deepEqual(fake.state.spawned.at(-1).args.slice(4, 7), ['remote-control', '--capacity', '100']);
+    const own = oneServer({ args: ['--capacity=8'] });
+    await own.mgr.serve(own.key);
+    assert.deepEqual(fake.state.spawned.at(-1).args.slice(4, 6), ['remote-control', '--capacity=8']);
+    const single = oneServer({ args: ['--spawn', 'session'] });
+    await single.mgr.serve(single.key);
+    assert.ok(!fake.state.spawned.at(-1).args.includes('--capacity'));
   });
   test('when claude exits, ends the rest of its group and exits with claude’s code', async () => {
     const { mgr, key } = oneServer();
