@@ -150,8 +150,10 @@ function createManager({ configDir, appBinary, helperPath, labelPrefix }) {
     if (!s) throw new Error(`no server ${key} in profiles.json`);
     if (s.problem) throw new Error(s.problem);
     const cc = claudeConfig(s.configDir, s.folder);
-    if (!cc.trusted) throw new Error(`${s.folder} is not trusted for ${s.configDir}. Run once in Terminal: cd "${s.folder}" && CLAUDE_CONFIG_DIR="${s.configDir}" claude remote-control, answer y, then Ctrl+C.`);
-    if (!cc.remoteAccepted) throw new Error(`Remote Control has not been accepted for ${s.configDir}. Run claude remote-control once in Terminal with that CLAUDE_CONFIG_DIR.`);
+    // Both are answered once, in Terminal, by the profile's "Set up in Terminal" step.
+    const setUp = (what) => new Error(`${what}\n\nTo fix it:\n1. Open Profiles and select ${s.profileName || s.profileId}.\n2. Press "Set up in Terminal" next to ${s.folder}.\n3. Answer y to "Trust this folder?" and to "Enable Remote Control?".\n4. Wait for "Ready", press Ctrl+C, then Start this server again.\n\nOr run it yourself in Terminal: cd "${s.folder}" && CLAUDE_CONFIG_DIR="${s.configDir}" claude remote-control`);
+    if (!cc.trusted) throw setUp(`${s.folder} is not trusted for ${s.configDir}.`);
+    if (!cc.remoteAccepted) throw setUp(`Remote Control has not been accepted for ${s.configDir}.`);
     await bootstrap(serverLabel(key), plist(serverLabel(key), ['serve', key], `<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer><key>ExitTimeOut</key><integer>${SHUTDOWN_GRACE_S + 15}</integer>`));
     log(`started server ${key}`);
   }

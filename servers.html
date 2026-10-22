@@ -39,7 +39,7 @@
   td.title { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tr:last-child td { border-bottom: 0; }
   pre { font: 11px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; margin: 8px 0 0; max-height: 220px; overflow: auto; }
-  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 12px; max-width: 80%; display: none; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 12px; max-width: 80%; display: none; white-space: pre-line; cursor: pointer; }
   label.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   .mcp { margin-top: 12px; }
   .mcp .sub.bad { color: var(--bad); }
@@ -72,7 +72,7 @@
   <div class="card" id="cleanup"></div>
   <div class="card" id="desktop"></div>
 </main>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" title="Click to close"></div>
 <script>
   const $ = (id) => document.getElementById(id);
   const h = (tag, attrs = {}, ...kids) => {
@@ -84,7 +84,9 @@
     for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
     return el;
   };
-  function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, 6000); }
+  // Long messages (setup instructions) stay up long enough to follow; a click dismisses any of them.
+  $('toast').addEventListener('click', () => { $('toast').style.display = 'none'; });
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, Math.max(6000, msg.length * 120)); }
   const errText = (e) => String(e.message || e).replace(/^Error invoking remote method 'mgr': (Error: )?/, '');
   async function act(fn, done) {
     try { const r = await fn(); if (done) toast(typeof done === 'function' ? done(r) : done); } catch (e) { toast(errText(e)); }

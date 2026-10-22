@@ -36,7 +36,10 @@ describe('startServer()', () => {
     const folder = sb.dir('folder');
     const cfg = sb.claudeConfigDir({ trusted: [folder], remote: false });
     const { mgr } = makeManager({ profiles: [{ id: 'w', name: 'W', configDir: cfg, servers: [{ id: 's', folder }] }] });
-    await assert.rejects(mgr.startServer('w-s'), /Remote Control has not been accepted/);
+    await assert.rejects(mgr.startServer('w-s'), (e) => /Remote Control has not been accepted/.test(e.message)
+      && e.message.includes('Press "Set up in Terminal" next to')
+      && e.message.includes('"Enable Remote Control?"')
+      && e.message.includes('claude remote-control'));
   });
   test('writes a KeepAlive launch agent that runs the helper, and loads it', async () => {
     const { mgr, key, configDir, logText } = oneServer();
