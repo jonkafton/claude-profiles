@@ -152,7 +152,16 @@
       d.name = $('f-name').value; d.account = $('f-account').value; d.url = $('f-url').value;
       if ($('f-config')) d.configDir = $('f-config').value;
     };
-    const useColour = async (c) => { sync(); d.colour = c; d.iconDataUrl = await markPng(d.kind, c); d.icon = d.iconDataUrl; d.iconSource = null; d.removeIcon = false; renderForm(); };
+    // live: the colour well is still open, so only the preview changes; re-rendering would detach the input and close its picker.
+    const useColour = async (c, live = false) => {
+      sync(); d.colour = c; d.iconSource = null; d.removeIcon = false;
+      const png = await markPng(d.kind, c);
+      if (d.colour !== c) return; // a later pick has already landed
+      d.iconDataUrl = png; d.icon = png;
+      if (!live) return renderForm();
+      const img = $('f-icon');
+      if (img?.tagName === 'IMG') img.src = png; else img?.replaceWith(Object.assign(avatar(png, d.name), { id: 'f-icon' }));
+    };
     const setKind = async (k) => { sync(); if (d.url === (d.kind === 'design' ? 'https://claude.ai/design' : 'https://claude.ai/code')) d.url = ''; d.kind = k; if (d.colour && d.iconDataUrl) { d.iconDataUrl = await markPng(k, d.colour); d.icon = d.iconDataUrl; } renderForm(); };
     // Only profiles with their own sign-in can be shared, and never the profile itself.
     const shareable = profilesList.filter((p) => !p.shareSignIn && p.id !== d.id);
@@ -179,14 +188,14 @@
         shareable.map((p) => h('option', { value: p.id, ...(d.shareSignIn === p.id ? { selected: true } : {}) }, `Share ${p.name}’s sign-in (${p.account})`))),
       h('div', { class: 'hint' }, 'Sharing reuses another profile’s sign-in on the same account, so you sign in once for both. Both profiles then always use the same account.'),
       h('label', {}, 'Icon'),
-      h('div', { class: 'row' }, avatar(d.icon, d.name),
+      h('div', { class: 'row' }, Object.assign(avatar(d.icon, d.name), { id: 'f-icon' }),
         h('button', { onclick: async () => { sync(); try { const r = await window.editor.chooseIcon(); if (r) { d.icon = r.preview; d.iconSource = r.source; d.iconDataUrl = null; d.colour = null; d.removeIcon = false; renderForm(); } } catch (e) { renderForm(errText(e)); } } }, 'Choose image…'),
         d.icon ? h('button', { onclick: () => { sync(); d.icon = null; d.iconSource = null; d.iconDataUrl = null; d.colour = null; d.removeIcon = true; renderForm(); } }, 'Remove') : null),
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('span', { class: 'hint', style: 'margin:0' }, 'Or pick a colour:'),
         h('div', { class: 'swatches' },
           SWATCHES.map((c) => h('button', { class: 'swatch', title: c, style: `background:${c}`, onclick: () => useColour(c) })),
-          h('input', { type: 'color', title: 'Any colour', value: d.colour || '#c96442', oninput: (e) => useColour(e.target.value) }))),
+          h('input', { type: 'color', title: 'Any colour', value: d.colour || '#c96442', oninput: (e) => useColour(e.target.value, true), onchange: (e) => useColour(e.target.value) }))),
       h('div', { class: 'hint' }, 'Shown in the sidebar, and as the app icon in the Dock and ⌘Tab while this profile is active.'),
       isCode ? [
         h('label', {}, 'Working folders'),
